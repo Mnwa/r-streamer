@@ -73,13 +73,9 @@ pub async fn connect(
                     }
                     buf.truncate(n);
 
-                    println!("{:?}", buf);
-
                     let mut buf = BytesMut::from(buf.as_slice());
 
                     reader.unprotect(&mut buf).unwrap();
-
-                    println!("{:?}", buf.to_vec());
 
                     Some((buf.to_vec(), ssl_stream))
                 }
@@ -205,42 +201,18 @@ impl AsyncWrite for ClientSslPackets {
 }
 
 fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
-    const SRTP_MASTER_KEY_KEY_LEN: usize = 16;
-    const SRTP_MASTER_KEY_SALT_LEN: usize = 14;
+    let rtp_policy = CryptoPolicy::default();
+    let rtcp_policy = CryptoPolicy::default();
 
-    let mut client_write_key = vec![0; SRTP_MASTER_KEY_KEY_LEN + SRTP_MASTER_KEY_SALT_LEN];
-    let mut server_write_key = vec![0; SRTP_MASTER_KEY_KEY_LEN + SRTP_MASTER_KEY_SALT_LEN];
-    let mut dtls_buf = vec![0; SRTP_MASTER_KEY_KEY_LEN * 2 + SRTP_MASTER_KEY_SALT_LEN * 2];
+    let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
     ssl.export_keying_material(&mut dtls_buf, "EXTRACTOR-dtls_srtp", None)?;
 
-    let (client_master_key, dtls_buf) = dtls_buf.split_at(SRTP_MASTER_KEY_KEY_LEN);
-    let (server_master_key, dtls_buf) = dtls_buf.split_at(SRTP_MASTER_KEY_KEY_LEN);
+    let pair = rtp_policy.extract_keying_material(&mut dtls_buf);
 
-    let (client_salt_key, server_salt_key) = dtls_buf.split_at(SRTP_MASTER_KEY_SALT_LEN);
-
-    client_write_key[..SRTP_MASTER_KEY_KEY_LEN].copy_from_slice(client_master_key);
-    client_write_key[SRTP_MASTER_KEY_KEY_LEN..].copy_from_slice(client_salt_key);
-
-    server_write_key[..SRTP_MASTER_KEY_KEY_LEN].copy_from_slice(server_master_key);
-    server_write_key[SRTP_MASTER_KEY_KEY_LEN..].copy_from_slice(server_salt_key);
-
-    let rtp_policy = CryptoPolicy::AesCm128NullAuth;
-    let rtcp_policy = CryptoPolicy::AesCm128NullAuth;
-
-    let srtp_incoming = Srtp::new(
-        SsrcType::AnyInbound,
-        rtp_policy,
-        rtcp_policy,
-        &server_write_key,
-    )
-    .unwrap();
-    let srtp_outcoming = Srtp::new(
-        SsrcType::AnyOutbound,
-        rtp_policy,
-        rtcp_policy,
-        &client_write_key,
-    )
-    .unwrap();
+    let srtp_incoming =
+        Srtp::new(SsrcType::AnyInbound, rtp_policy, rtcp_policy, pair.client).unwrap();
+    let srtp_outcoming =
+        Srtp::new(SsrcType::AnyOutbound, rtp_policy, rtcp_policy, pair.server).unwrap();
 
     Ok((srtp_incoming, srtp_outcoming))
 }
