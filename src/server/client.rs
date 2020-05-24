@@ -73,11 +73,15 @@ pub async fn connect(
                     }
                     buf.truncate(n);
 
-                    let mut bufm = BytesMut::from(buf.as_slice());
+                    println!("{:?}", buf);
 
-                    println!("is err {}", reader.unprotect(&mut bufm).is_err());
+                    let mut buf = BytesMut::from(buf.as_slice());
 
-                    Some((buf, ssl_stream))
+                    reader.unprotect(&mut buf).unwrap();
+
+                    println!("{:?}", buf.to_vec());
+
+                    Some((buf.to_vec(), ssl_stream))
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     warn!("long message");
@@ -220,11 +224,8 @@ fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
     server_write_key[..SRTP_MASTER_KEY_KEY_LEN].copy_from_slice(server_master_key);
     server_write_key[SRTP_MASTER_KEY_KEY_LEN..].copy_from_slice(server_salt_key);
 
-    println!("{:?}", server_write_key.len());
-    println!("{:?}", client_write_key.len());
-
-    let rtp_policy = CryptoPolicy::default();
-    let rtcp_policy = CryptoPolicy::default();
+    let rtp_policy = CryptoPolicy::AesCm128NullAuth;
+    let rtcp_policy = CryptoPolicy::AesCm128NullAuth;
 
     let srtp_incoming = Srtp::new(
         SsrcType::AnyInbound,

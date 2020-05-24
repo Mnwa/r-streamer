@@ -1,5 +1,4 @@
-use openssl::ec::EcKey;
-use openssl::nid::Nid;
+use openssl::ssl::SslSessionCacheMode;
 use openssl::{
     error::ErrorStack,
     hash::MessageDigest,
@@ -28,16 +27,16 @@ impl Crypto {
 
         ssl_acceptor_builder.set_verify(SslVerifyMode::NONE);
 
-        ssl_acceptor_builder
-            .set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_32:SRTP_AES128_CM_SHA1_80")?;
+        ssl_acceptor_builder.set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80")?;
 
         ssl_acceptor_builder.set_read_ahead(true);
 
-        let ecdh = EcKey::from_curve_name(Nid::X9_62_PRIME256V1)?;
-        ssl_acceptor_builder.set_tmp_ecdh(&ecdh)?;
+        ssl_acceptor_builder.set_session_cache_mode(SslSessionCacheMode::OFF);
 
         ssl_acceptor_builder.set_private_key(&key)?;
         ssl_acceptor_builder.set_certificate(&x509)?;
+
+        ssl_acceptor_builder.check_private_key()?;
 
         let ssl_acceptor = Arc::new(ssl_acceptor_builder.build());
 
