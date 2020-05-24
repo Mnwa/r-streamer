@@ -1,3 +1,4 @@
+mod rtp;
 mod sdp;
 mod server;
 mod stun;
@@ -10,7 +11,7 @@ use hyper::{
 use log::info;
 
 use crate::sdp::generate_response;
-use crate::server::udp::{create_udp, ServerDataRequest};
+use crate::server::udp::create_udp;
 use actix::System;
 use futures::StreamExt;
 use hyper::body::Buf;
@@ -62,8 +63,7 @@ fn main() {
                             .collect()
                             .await;
 
-                        let sd = recv.send(ServerDataRequest).await.unwrap();
-                        let sdp = generate_response(&sdp_req, sd).unwrap();
+                        let sdp = generate_response(&sdp_req, recv).await.unwrap();
                         Response::builder()
                             .status(StatusCode::OK)
                             .body(Body::from(sdp.to_string().replace("\r\n\r\n", "\r\n")))

@@ -1,9 +1,11 @@
 use crate::server::crypto::Crypto;
 use crate::server::meta::ServerMeta;
+use crate::server::tls::TlsActor;
 use crate::stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest};
 use actix::prelude::*;
 use futures::StreamExt;
 use log::{info, warn};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};
@@ -12,7 +14,9 @@ use tokio::sync::Mutex;
 
 pub struct UdpRecv {
     send: Arc<Addr<UdpSend>>,
+    dtls: Arc<Addr<TlsActor>>,
     data: Arc<ServerData>,
+    sessions: HashSet<Session>,
 }
 
 impl Actor for UdpRecv {
@@ -20,7 +24,12 @@ impl Actor for UdpRecv {
 }
 
 impl UdpRecv {
-    pub fn new(recv: RecvHalf, send: Arc<Addr<UdpSend>>, data: Arc<ServerData>) -> Addr<UdpRecv> {
+    pub fn new(
+        recv: RecvHalf,
+        send: Arc<Addr<UdpSend>>,
+        dtls: Arc<Addr<TlsActor>>,
+        data: Arc<ServerData>,
+    ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
             let stream = futures::stream::unfold(recv, |mut server| async move {
                 let mut message_buf: Vec<u8> = vec![0; 0x10000];
@@ -39,13 +48,18 @@ impl UdpRecv {
             .map(
                 |(message, addr)| match parse_stun_binding_request(&message) {
                     Some(request) => WebRtcRequest::Stun(request, addr),
-                    None => WebRtcRequest::Raw(message, addr),
+                    None => WebRtcRequest::Dtls(message, addr),
                 },
             );
 
             ctx.add_stream(stream);
 
-            UdpRecv { send, data }
+            UdpRecv {
+                send,
+                dtls,
+                data,
+                sessions: HashSet::new(),
+            }
         })
     }
 }
@@ -62,30 +76,42 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
     fn handle(&mut self, item: WebRtcRequest, ctx: &mut Context<Self>) {
         match item {
             WebRtcRequest::Stun(req, addr) => {
-                let udp_send = Arc::clone(&self.send);
-                ctx.spawn(
-                    async move {
-                        match udp_send.send(WebRtcRequest::Stun(req, addr)).await {
-                            Ok(_) => {}
-                            Err(e) => warn!("mailbox error: {:#?}", e),
+                let session = Session {
+                    server_user: self.data.meta.user.clone(),
+                    client_user: req.remote_user.clone(),
+                };
+                if self.sessions.contains(&session) {
+                    let udp_send = Arc::clone(&self.send);
+                    ctx.spawn(
+                        async move {
+                            if let Err(e) = udp_send.send(WebRtcRequest::Stun(req, addr)).await {
+                                warn!("udp recv to udp send: {:#?}", e)
+                            }
                         }
-                    }
-                    .into_actor(self),
-                );
+                        .into_actor(self),
+                    );
+                }
             }
-            WebRtcRequest::Raw(message, addr) => {
-                let udp_send = Arc::clone(&self.send);
+            WebRtcRequest::Dtls(message, addr) => {
+                let dtls = Arc::clone(&self.dtls);
                 ctx.spawn(
                     async move {
-                        match udp_send.send(WebRtcRequest::Raw(message, addr)).await {
-                            Ok(_) => {}
-                            Err(e) => warn!("mailbox error: {:#?}", e),
+                        if let Err(e) = dtls.send(WebRtcRequest::Dtls(message, addr)).await {
+                            warn!("udp recv to dtls: {:#?}", e)
                         }
                     }
                     .into_actor(self),
                 );
             }
         }
+    }
+}
+
+impl Handler<Session> for UdpRecv {
+    type Result = bool;
+
+    fn handle(&mut self, session: Session, _ctx: &mut Context<Self>) -> Self::Result {
+        self.sessions.insert(session)
     }
 }
 
@@ -115,31 +141,42 @@ impl Handler<WebRtcRequest> for UdpSend {
     type Result = ();
 
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
-        if let WebRtcRequest::Stun(req, addr) = msg {
-            let sender = Arc::clone(&self.send);
-            let mut message_buf: Vec<u8> = vec![0; 0x10000];
-            let n = write_stun_success_response(
-                req.transaction_id,
-                addr,
-                self.data.meta.password.as_bytes(),
-                &mut message_buf,
-            )
-            .unwrap();
-            message_buf.truncate(n);
-            ctx.spawn(
-                async move {
-                    let result = sender.lock().await.send_to(&message_buf, &addr).await;
-                    if let Ok(n) = result {
-                        info!("success sent {} bytes", n)
+        let sender = Arc::clone(&self.send);
+
+        match msg {
+            WebRtcRequest::Stun(req, addr) => {
+                let mut message_buf: Vec<u8> = vec![0; 0x10000];
+                let n = write_stun_success_response(
+                    req.transaction_id,
+                    addr,
+                    self.data.meta.password.as_bytes(),
+                    &mut message_buf,
+                )
+                .unwrap();
+                message_buf.truncate(n);
+                ctx.spawn(
+                    async move {
+                        let result = sender.lock().await.send_to(&message_buf, &addr).await;
+                        if let Err(e) = result {
+                            if e.kind() != std::io::ErrorKind::AddrNotAvailable {
+                                warn!("err {:?}", e)
+                            }
+                        }
                     }
-                }
-                .into_actor(self),
-            );
-        } else {
-            if let WebRtcRequest::Raw(message, _addr) = msg {
-                info!("message: {:?}", message)
+                    .into_actor(self),
+                );
             }
-            warn!("Unhandled request. Ignoring...")
+            WebRtcRequest::Dtls(message, addr) => {
+                ctx.spawn(
+                    async move {
+                        let result = sender.lock().await.send_to(&message, &addr).await;
+                        if let Err(e) = result {
+                            warn!("err dtls {:?}", e)
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
         }
     }
 }
@@ -152,7 +189,8 @@ pub async fn create_udp(addr: SocketAddr) -> (Arc<Addr<UdpRecv>>, Arc<Addr<UdpSe
 
     let (recv, send) = server.split();
     let udp_send = Arc::new(UdpSend::new(send, Arc::clone(&data)));
-    let udp_recv = UdpRecv::new(recv, Arc::clone(&udp_send), data);
+    let dtls = Arc::new(TlsActor::new(Arc::clone(&data), Arc::clone(&udp_send)));
+    let udp_recv = UdpRecv::new(recv, Arc::clone(&udp_send), dtls, data);
 
     (Arc::new(udp_recv), Arc::clone(&udp_send))
 }
@@ -160,7 +198,7 @@ pub async fn create_udp(addr: SocketAddr) -> (Arc<Addr<UdpRecv>>, Arc<Addr<UdpSe
 #[derive(Debug)]
 pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
-    Raw(Vec<u8>, SocketAddr),
+    Dtls(Vec<u8>, SocketAddr),
 }
 
 impl Message for WebRtcRequest {
@@ -177,3 +215,13 @@ pub struct ServerData {
 #[derive(Message)]
 #[rtype(result = "ServerData")]
 pub struct ServerDataRequest;
+
+#[derive(Hash, Eq, PartialEq)]
+pub struct Session {
+    pub server_user: String,
+    pub client_user: String,
+}
+
+impl Message for Session {
+    type Result = bool;
+}

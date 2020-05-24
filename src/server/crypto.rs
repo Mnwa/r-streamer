@@ -1,3 +1,5 @@
+use openssl::ec::EcKey;
+use openssl::nid::Nid;
 use openssl::{
     error::ErrorStack,
     hash::MessageDigest,
@@ -5,13 +7,14 @@ use openssl::{
     ssl::{SslAcceptor, SslMethod, SslVerifyMode},
     x509::X509,
 };
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Crypto {
     pub key: PKey<Private>,
     pub x509: X509,
     pub digest: Vec<u8>,
-    pub ssl_acceptor: SslAcceptor,
+    pub ssl_acceptor: Arc<SslAcceptor>,
 }
 
 impl Crypto {
@@ -21,13 +24,22 @@ impl Crypto {
 
         let digest = x509.digest(MessageDigest::sha256())?.to_vec();
 
-        let mut ssl_acceptor_builder = SslAcceptor::mozilla_intermediate(SslMethod::dtls())?;
+        let mut ssl_acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::dtls())?;
 
         ssl_acceptor_builder.set_verify(SslVerifyMode::NONE);
 
+        ssl_acceptor_builder
+            .set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_32:SRTP_AES128_CM_SHA1_80")?;
+
+        ssl_acceptor_builder.set_read_ahead(true);
+
+        let ecdh = EcKey::from_curve_name(Nid::X9_62_PRIME256V1)?;
+        ssl_acceptor_builder.set_tmp_ecdh(&ecdh)?;
+
         ssl_acceptor_builder.set_private_key(&key)?;
         ssl_acceptor_builder.set_certificate(&x509)?;
-        let ssl_acceptor = ssl_acceptor_builder.build();
+
+        let ssl_acceptor = Arc::new(ssl_acceptor_builder.build());
 
         Ok(Crypto {
             key,

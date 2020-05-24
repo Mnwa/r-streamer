@@ -1,15 +1,17 @@
-use crate::server::udp::ServerData;
+use crate::server::udp::{ServerDataRequest, Session, UdpRecv};
+use actix::Addr;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use webrtc_sdp::address::{Address, ExplicitlyTypedAddress};
 use webrtc_sdp::attribute_type::SdpAttribute::{
-    Candidate, Fingerprint, Group, MsidSemantic, Rtcp, Sendrecv, Setup,
+    Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp, Sendonly, Setup,
 };
 use webrtc_sdp::attribute_type::SdpAttributeFingerprintHashType::Sha256;
 use webrtc_sdp::attribute_type::SdpAttributeGroupSemantic::Bundle;
 use webrtc_sdp::attribute_type::SdpAttributeSetup::Passive;
-use webrtc_sdp::attribute_type::SdpAttributeType::{Msid, Ssrc, SsrcGroup};
+use webrtc_sdp::attribute_type::SdpAttributeType::{IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup};
 use webrtc_sdp::attribute_type::{
     SdpAttribute, SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
     SdpAttributeFingerprint, SdpAttributeGroup, SdpAttributeMsidSemantic, SdpAttributeRtcp,
@@ -18,17 +20,34 @@ use webrtc_sdp::error::SdpParserInternalError;
 use webrtc_sdp::media_type::SdpMedia;
 use webrtc_sdp::{parse_sdp, SdpConnection, SdpSession, SdpTiming};
 
-pub fn generate_response(sdp: &str, server_data: ServerData) -> Option<SdpSession> {
+pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<SdpSession> {
     let req = parse_sdp(sdp, true).unwrap();
+
+    let server_data = recv.send(ServerDataRequest).await.unwrap();
 
     let version = req.version;
     let session = req.session.clone()?;
     let mut origin = req.get_origin().clone();
 
-    let mut rng = rand::thread_rng();
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
+    let client_user = req
+        .media
+        .first()?
+        .get_attribute(IceUfrag)?
+        .to_string()
+        .replace("ice-ufrag:", "");
+
+    let _inserted = recv
+        .send(Session {
+            server_user: server_user.clone(),
+            client_user,
+        })
+        .await
+        .unwrap();
+
+    let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();
     origin.unicast_addr = ExplicitlyTypedAddress::from(server_data.addr.ip());
 
@@ -65,6 +84,8 @@ pub fn generate_response(sdp: &str, server_data: ServerData) -> Option<SdpSessio
     }))
     .unwrap();
 
+    res.add_attribute(IceLite).unwrap();
+
     res.set_timing(SdpTiming { start: 0, stop: 0 });
 
     res.media = media;
@@ -86,6 +107,7 @@ fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
 
 fn remove_useless_attributes(m: &mut SdpMedia) {
     m.remove_attribute(Msid);
+    m.remove_attribute(Sendrecv);
     m.remove_attribute(SsrcGroup);
     m.remove_attribute(Ssrc);
 }
@@ -98,7 +120,7 @@ fn set_attributes(
     addr: SocketAddr,
     rng: &mut ThreadRng,
 ) -> Result<(), SdpParserInternalError> {
-    m.set_attribute(Sendrecv)?;
+    m.set_attribute(Sendonly)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
     m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
@@ -106,12 +128,13 @@ fn set_attributes(
         fingerprint,
     }))?;
     m.set_attribute(Setup(Passive))?;
+    m.set_attribute(EndOfCandidates)?;
     m.set_attribute(Rtcp(SdpAttributeRtcp {
         port: addr.port(),
         unicast_addr: Some(ExplicitlyTypedAddress::from(addr.ip())),
     }))?;
     m.set_attribute(Candidate(SdpAttributeCandidate {
-        foundation: "1".to_string(),
+        foundation: "0".to_string(),
         priority: rng.gen::<u32>() as u64,
         address: Address::Ip(addr.ip()),
         port: addr.port() as u32,
@@ -126,5 +149,6 @@ fn set_attributes(
         component: 1,
         unknown_extensions: vec![],
     }))?;
+
     Ok(())
 }
