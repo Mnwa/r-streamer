@@ -1,5 +1,6 @@
 use crate::server::udp::{ServerDataRequest, Session, UdpRecv};
-use actix::Addr;
+use actix::prelude::Request;
+use actix::{Addr, MailboxError};
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::net::SocketAddr;
@@ -32,20 +33,28 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
-    let client_user = req
+    let sessions: Vec<Request<UdpRecv, Session>> = req
         .media
-        .first()?
-        .get_attribute(IceUfrag)?
-        .to_string()
-        .replace("ice-ufrag:", "");
-
-    let _inserted = recv
-        .send(Session {
-            server_user: server_user.clone(),
-            client_user,
+        .iter()
+        .filter_map(|m| {
+            Some(
+                m.get_attribute(IceUfrag)?
+                    .to_string()
+                    .replace("ice-ufrag:", ""),
+            )
         })
+        .map(|client_user| {
+            recv.send(Session {
+                server_user: server_user.clone(),
+                client_user,
+            })
+        })
+        .collect();
+
+    let _inserted = futures::future::join_all(sessions)
         .await
-        .unwrap();
+        .into_iter()
+        .collect::<Result<Vec<bool>, MailboxError>>();
 
     let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();
