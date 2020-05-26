@@ -202,8 +202,8 @@ impl AsyncWrite for ClientSslPackets {
 }
 
 fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
-    let rtp_policy = CryptoPolicy::default();
-    let rtcp_policy = CryptoPolicy::default();
+    let rtp_policy = CryptoPolicy::AesCm128HmacSha1Bit80;
+    let rtcp_policy = CryptoPolicy::AesCm128HmacSha1Bit80;
 
     let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
     ssl.export_keying_material(dtls_buf.as_mut_slice(), "EXTRACTOR-dtls_srtp", None)?;
@@ -211,9 +211,9 @@ fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
     let pair = rtp_policy.extract_keying_material(dtls_buf.as_mut_slice());
 
     let srtp_incoming =
-        Srtp::new(SsrcType::AnyInbound, rtp_policy, rtcp_policy, pair.server).unwrap();
+        Srtp::new(SsrcType::AnyInbound, rtp_policy, rtcp_policy, pair.client).unwrap();
     let srtp_outcoming =
-        Srtp::new(SsrcType::AnyOutbound, rtp_policy, rtcp_policy, pair.client).unwrap();
+        Srtp::new(SsrcType::AnyOutbound, rtp_policy, rtcp_policy, pair.server).unwrap();
 
     Ok((srtp_incoming, srtp_outcoming))
 }
