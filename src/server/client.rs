@@ -63,7 +63,7 @@ pub async fn connect(
 
     Ok(futures::stream::unfold(
         (ssl_stream, srtp_reader, srtp_writer),
-        |(mut ssl_stream, mut srtp_reader, mut srtp_writer)| async move {
+        |(mut ssl_stream, mut srtp_reader, srtp_writer)| async move {
             let mut buf = vec![0; 0x10000];
 
             match ssl_stream.get_mut().read(&mut buf).await {
@@ -75,8 +75,7 @@ pub async fn connect(
 
                     let mut buf = BytesMut::from(buf.as_slice());
 
-                    println!("{}", srtp_reader.unprotect(&mut buf).is_err());
-                    println!("{}", srtp_writer.unprotect(&mut buf).is_err());
+                    println!("{:?}", srtp_reader.unprotect(&mut buf));
 
                     Some((buf.to_vec(), (ssl_stream, srtp_reader, srtp_writer)))
                 }
@@ -204,6 +203,8 @@ impl AsyncWrite for ClientSslPackets {
 fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
     let rtp_policy = CryptoPolicy::AesCm128HmacSha1Bit80;
     let rtcp_policy = CryptoPolicy::AesCm128HmacSha1Bit80;
+
+    println!("{}", ssl.selected_srtp_profile().unwrap().name());
 
     let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
     ssl.export_keying_material(dtls_buf.as_mut_slice(), "EXTRACTOR-dtls_srtp", None)?;
