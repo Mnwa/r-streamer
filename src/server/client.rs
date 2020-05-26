@@ -57,14 +57,14 @@ pub async fn connect(
         }
     };
 
+    let (srtp_reader, srtp_writer) = get_srtp(ssl_stream.ssl()).unwrap();
+
     warn!("end of handshake");
 
     Ok(futures::stream::unfold(
-        ssl_stream,
-        |mut ssl_stream| async move {
+        (ssl_stream, srtp_reader, srtp_writer),
+        |(mut ssl_stream, mut srtp_reader, mut srtp_writer)| async move {
             let mut buf = vec![0; 0x10000];
-
-            let (mut reader, _) = get_srtp(ssl_stream.ssl()).unwrap();
 
             match ssl_stream.get_mut().read(&mut buf).await {
                 Ok(n) => {
@@ -75,9 +75,10 @@ pub async fn connect(
 
                     let mut buf = BytesMut::from(buf.as_slice());
 
-                    reader.unprotect(&mut buf).unwrap();
+                    println!("{}", srtp_reader.unprotect(&mut buf).is_err());
+                    println!("{}", srtp_writer.unprotect(&mut buf).is_err());
 
-                    Some((buf.to_vec(), ssl_stream))
+                    Some((buf.to_vec(), (ssl_stream, srtp_reader, srtp_writer)))
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     warn!("long message");
@@ -205,14 +206,14 @@ fn get_srtp(ssl: &SslRef) -> Result<(Srtp, Srtp), ErrorStack> {
     let rtcp_policy = CryptoPolicy::default();
 
     let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
-    ssl.export_keying_material(&mut dtls_buf, "EXTRACTOR-dtls_srtp", None)?;
+    ssl.export_keying_material(dtls_buf.as_mut_slice(), "EXTRACTOR-dtls_srtp", None)?;
 
-    let pair = rtp_policy.extract_keying_material(&mut dtls_buf);
+    let pair = rtp_policy.extract_keying_material(dtls_buf.as_mut_slice());
 
     let srtp_incoming =
-        Srtp::new(SsrcType::AnyInbound, rtp_policy, rtcp_policy, pair.client).unwrap();
+        Srtp::new(SsrcType::AnyInbound, rtp_policy, rtcp_policy, pair.server).unwrap();
     let srtp_outcoming =
-        Srtp::new(SsrcType::AnyOutbound, rtp_policy, rtcp_policy, pair.server).unwrap();
+        Srtp::new(SsrcType::AnyOutbound, rtp_policy, rtcp_policy, pair.client).unwrap();
 
     Ok((srtp_incoming, srtp_outcoming))
 }
