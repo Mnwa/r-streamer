@@ -1,4 +1,4 @@
-use crate::client::stream::{ClientSslPackets, ClientSslPacketsChannels, OutgoingReader};
+use crate::client::stream::{ClientSslPackets, ClientSslPacketsChannels};
 use crate::dtls::message::DtlsMessage;
 use crate::rtp::srtp::SrtpTransport;
 use futures::channel::mpsc::SendError;

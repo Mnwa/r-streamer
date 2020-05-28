@@ -1,11 +1,10 @@
-use crate::client::clients::{ClientError, ClientState, ClientsStorage};
+use crate::client::clients::{ClientState, ClientsStorage};
 use crate::client::dtls::{extract_dtls, push_dtls};
 use crate::dtls::connector::connect;
 use crate::dtls::message::{DtlsMessage, MessageType};
 use crate::rtp::rtp::rtp_handler;
 use crate::server::udp::{UdpSend, WebRtcRequest};
 use actix::prelude::*;
-use futures::StreamExt;
 use log::warn;
 use openssl::ssl::SslAcceptor;
 use std::net::SocketAddr;

@@ -37,6 +37,7 @@ impl SrtpTransport {
         })
     }
 
+    #[allow(dead_code)]
     pub fn protect(&mut self, buf: &[u8]) -> Result<(), ErrorParse> {
         let mut buf = BytesMut::from(buf);
         self.server.protect(&mut buf).map_err(|e| e.into())

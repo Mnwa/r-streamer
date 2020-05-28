@@ -1,4 +1,5 @@
-use crate::server::udp::{ServerDataRequest, Session, UdpRecv};
+use crate::client::sessions::Session;
+use crate::server::udp::{ServerDataRequest, UdpRecv};
 use actix::prelude::Request;
 use actix::{Addr, MailboxError};
 use rand::prelude::ThreadRng;
@@ -43,12 +44,7 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
                     .replace("ice-ufrag:", ""),
             )
         })
-        .map(|client_user| {
-            recv.send(Session {
-                server_user: server_user.clone(),
-                client_user,
-            })
-        })
+        .map(|client_user| recv.send(Session::new(server_user.clone(), client_user)))
         .collect();
 
     let _inserted = futures::future::join_all(sessions)

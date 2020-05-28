@@ -1,4 +1,5 @@
 use crate::client::actor::ClientActor;
+use crate::client::sessions::{Session, SessionsStorage};
 use crate::dtls::is_dtls;
 use crate::rtp::rtp::parse_rtp;
 use crate::server::crypto::Crypto;
@@ -18,7 +19,7 @@ pub struct UdpRecv {
     send: Arc<Addr<UdpSend>>,
     dtls: Arc<Addr<ClientActor>>,
     data: Arc<ServerData>,
-    sessions: HashSet<Session>,
+    sessions: SessionsStorage,
 }
 
 impl Actor for UdpRecv {
@@ -73,10 +74,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
     fn handle(&mut self, item: WebRtcRequest, ctx: &mut Context<Self>) {
         match item {
             WebRtcRequest::Stun(req, addr) => {
-                let session = Session {
-                    server_user: self.data.meta.user.clone(),
-                    client_user: req.remote_user.clone(),
-                };
+                let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
                 if self.sessions.contains(&session) {
                     let udp_send = Arc::clone(&self.send);
@@ -256,13 +254,3 @@ pub struct ServerData {
 #[derive(Message)]
 #[rtype(result = "ServerData")]
 pub struct ServerDataRequest;
-
-#[derive(Hash, Eq, PartialEq)]
-pub struct Session {
-    pub server_user: String,
-    pub client_user: String,
-}
-
-impl Message for Session {
-    type Result = bool;
-}

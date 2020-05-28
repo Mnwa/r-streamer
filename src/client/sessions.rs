@@ -1,29 +1,23 @@
-use openssl::hash::{hash, MessageDigest};
+use actix::Message;
 use std::collections::HashSet;
 
 #[derive(Hash, Eq, PartialEq)]
 pub struct Session {
-    user: String,
-    password: Password,
+    server_user: String,
+    client_user: String,
 }
 
 impl Session {
-    fn new(user: String, password: String) -> Self {
+    pub fn new(server_user: String, client_user: String) -> Self {
         Session {
-            user,
-            password: password.into(),
+            server_user,
+            client_user,
         }
     }
 }
 
-#[derive(Hash, Eq, PartialEq)]
-struct Password(Vec<u8>);
-
-impl From<String> for Password {
-    fn from(password: String) -> Self {
-        let hash = hash(MessageDigest::sha256(), password.as_bytes()).unwrap();
-        Self(hash.to_vec())
-    }
+impl Message for Session {
+    type Result = bool;
 }
 
 pub type SessionsStorage = HashSet<Session>;

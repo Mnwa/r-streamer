@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 #[derive(Debug)]
 pub struct DtlsMessage(MessageType, Vec<u8>, SocketAddr);
 impl DtlsMessage {
+    #[allow(dead_code)]
     pub fn create_incoming(message: Vec<u8>, addr: SocketAddr) -> Self {
         DtlsMessage(MessageType::Incoming, message, addr)
     }
@@ -24,6 +25,7 @@ impl Message for DtlsMessage {
     type Result = ();
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum MessageType {
     Incoming,
