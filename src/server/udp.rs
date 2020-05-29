@@ -217,7 +217,7 @@ pub async fn create_udp(addr: SocketAddr) -> (Arc<Addr<UdpRecv>>, Arc<Addr<UdpSe
     (Arc::new(udp_recv), Arc::clone(&udp_send))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
     Dtls(Vec<u8>, SocketAddr),

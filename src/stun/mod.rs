@@ -6,7 +6,7 @@ use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
 
 pub type Error = Box<dyn error::Error + Send + Sync>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StunBindingRequest {
     pub transaction_id: [u8; STUN_TRANSACTION_ID_LEN],
     pub remote_user: String,

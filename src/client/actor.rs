@@ -2,7 +2,7 @@ use crate::client::clients::{ClientState, ClientsStorage};
 use crate::client::dtls::{extract_dtls, push_dtls};
 use crate::dtls::connector::connect;
 use crate::dtls::message::{DtlsMessage, MessageType};
-use crate::rtp::rtp::rtp_handler;
+use crate::rtp::rtp::{is_rtcp, rctp_handler, rtp_handler};
 use crate::server::udp::{UdpSend, WebRtcRequest};
 use actix::prelude::*;
 use log::warn;
@@ -93,7 +93,13 @@ impl Handler<WebRtcRequest> for ClientActor {
                     async move {
                         let mut client_unlocked = client.lock().await;
                         if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
-                            if let Err(e) =
+                            if is_rtcp(&message) {
+                                if let Err(e) =
+                                    rctp_handler(WebRtcRequest::Rtc(message, addr), Some(srtp))
+                                {
+                                    warn!("rtp err: {}", e)
+                                }
+                            } else if let Err(e) =
                                 rtp_handler(WebRtcRequest::Rtc(message, addr), Some(srtp))
                             {
                                 warn!("rtp err: {}", e)

@@ -48,6 +48,12 @@ impl SrtpTransport {
         self.client.unprotect(&mut buf)?;
         Ok(buf.to_vec())
     }
+
+    pub fn unprotect_rctp(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
+        let mut buf = BytesMut::from(buf);
+        self.client.unprotect_rtcp(&mut buf)?;
+        Ok(buf.to_vec())
+    }
 }
 
 #[derive(Debug)]
