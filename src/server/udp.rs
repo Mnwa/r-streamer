@@ -1,5 +1,5 @@
 use crate::client::actor::ClientActor;
-use crate::client::sessions::{Session, SessionsStorage};
+use crate::client::sessions::{Session, SessionMessage, SessionsStorage};
 use crate::dtls::is_dtls;
 use crate::rtp::rtp::parse_rtp;
 use crate::server::crypto::Crypto;
@@ -8,7 +8,7 @@ use crate::stun::{parse_stun_binding_request, write_stun_success_response, StunB
 use actix::prelude::*;
 use futures::StreamExt;
 use log::{info, warn};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};
@@ -56,7 +56,7 @@ impl UdpRecv {
                 send,
                 dtls,
                 data,
-                sessions: HashSet::new(),
+                sessions: HashMap::new(),
             }
         })
     }
@@ -76,7 +76,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
-                if self.sessions.contains(&session) {
+                if self.sessions.contains_key(&session) {
                     let udp_send = Arc::clone(&self.send);
                     ctx.spawn(
                         async move {
@@ -114,11 +114,16 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
     }
 }
 
-impl Handler<Session> for UdpRecv {
+impl Handler<SessionMessage> for UdpRecv {
     type Result = bool;
 
-    fn handle(&mut self, session: Session, _ctx: &mut Context<Self>) -> Self::Result {
-        self.sessions.insert(session)
+    fn handle(
+        &mut self,
+        SessionMessage(session, id): SessionMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        self.sessions.insert(session, id);
+        true
     }
 }
 

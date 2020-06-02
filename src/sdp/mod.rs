@@ -1,4 +1,4 @@
-use crate::client::sessions::Session;
+use crate::client::sessions::{Session, SessionMessage};
 use crate::server::udp::{ServerDataRequest, UdpRecv};
 use actix::prelude::Request;
 use actix::{Addr, MailboxError};
@@ -34,7 +34,7 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
-    let sessions: Vec<Request<UdpRecv, Session>> = req
+    let sessions: Vec<Request<UdpRecv, SessionMessage>> = req
         .media
         .iter()
         .filter_map(|m| {
@@ -44,7 +44,11 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
                     .replace("ice-ufrag:", ""),
             )
         })
-        .map(|client_user| recv.send(Session::new(server_user.clone(), client_user)))
+        .map(|client_user| {
+            let session = Session::new(server_user.clone(), client_user);
+            let session_message = SessionMessage(session, 1);
+            recv.send(session_message)
+        })
         .collect();
 
     let _inserted = futures::future::join_all(sessions)

@@ -1,5 +1,5 @@
 use actix::Message;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 #[derive(Hash, Eq, PartialEq)]
 pub struct Session {
@@ -16,8 +16,10 @@ impl Session {
     }
 }
 
-impl Message for Session {
+pub struct SessionMessage(pub Session, pub usize);
+
+impl Message for SessionMessage {
     type Result = bool;
 }
 
-pub type SessionsStorage = HashSet<Session>;
+pub type SessionsStorage = HashMap<Session, usize>;
