@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use webrtc_sdp::address::{Address, ExplicitlyTypedAddress};
 use webrtc_sdp::attribute_type::SdpAttribute::{
-    Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp, Sendonly, Setup,
+    Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
+    Sendrecv as SendrecvAttr, Setup,
 };
 use webrtc_sdp::attribute_type::SdpAttributeFingerprintHashType::Sha256;
 use webrtc_sdp::attribute_type::SdpAttributeGroupSemantic::Bundle;
@@ -129,7 +130,7 @@ fn set_attributes(
     addr: SocketAddr,
     rng: &mut ThreadRng,
 ) -> Result<(), SdpParserInternalError> {
-    m.set_attribute(Sendonly)?;
+    m.set_attribute(SendrecvAttr)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
     m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {

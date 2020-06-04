@@ -1,4 +1,5 @@
 use crate::client::actor::ClientActor;
+use crate::client::group::GroupId;
 use crate::client::sessions::{Session, SessionMessage, SessionsStorage};
 use crate::dtls::is_dtls;
 use crate::rtp::rtp::parse_rtp;
@@ -76,12 +77,18 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
-                if self.sessions.contains_key(&session) {
+                if let Some(group_id) = self.sessions.get(&session) {
+                    let group_id = *group_id;
                     let udp_send = Arc::clone(&self.send);
+                    let dtls = Arc::clone(&self.dtls);
                     ctx.spawn(
                         async move {
                             if let Err(e) = udp_send.send(WebRtcRequest::Stun(req, addr)).await {
                                 warn!("udp recv to udp send: {:#?}", e)
+                            }
+
+                            if let Err(e) = dtls.send(GroupId(group_id, addr)).await {
+                                warn!("udp recv to dtls: {:#?}", e)
                             }
                         }
                         .into_actor(self),

@@ -6,30 +6,28 @@ pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
     RtpReader::new(buf).ok()
 }
 
-pub fn rtp_handler(
+pub fn rtp_processor(
     request: WebRtcRequest,
     transport: Option<&mut SrtpTransport>,
-) -> Result<(), ErrorParse> {
+) -> Result<Vec<u8>, ErrorParse> {
     if let WebRtcRequest::Rtc(mut message, _addr) = request {
         if let Some(transport) = transport {
             message = transport.unprotect(&message)?;
         }
-        println!("{:?}", message);
-        return Ok(());
+        return Ok(message);
     }
     unimplemented!()
 }
 
-pub fn rctp_handler(
+pub fn rtcp_processor(
     request: WebRtcRequest,
     transport: Option<&mut SrtpTransport>,
-) -> Result<(), ErrorParse> {
+) -> Result<Vec<u8>, ErrorParse> {
     if let WebRtcRequest::Rtc(mut message, _addr) = request {
         if let Some(transport) = transport {
             message = transport.unprotect_rctp(&message)?;
         }
-        println!("{:?}", message);
-        return Ok(());
+        return Ok(message);
     }
     unimplemented!()
 }

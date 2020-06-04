@@ -1,8 +1,9 @@
 use crate::client::clients::{ClientState, ClientsStorage};
 use crate::client::dtls::{extract_dtls, push_dtls};
+use crate::client::group::{GroupId, GroupsAddrStorage, GroupsStorage};
 use crate::dtls::connector::connect;
 use crate::dtls::message::{DtlsMessage, MessageType};
-use crate::rtp::rtp::{is_rtcp, rctp_handler, rtp_handler};
+use crate::rtp::rtp::{is_rtcp, rtcp_processor, rtp_processor};
 use crate::server::udp::{UdpSend, WebRtcRequest};
 use actix::prelude::*;
 use log::warn;
@@ -12,7 +13,9 @@ use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
-    storage: ClientsStorage,
+    client_storage: ClientsStorage,
+    group_storage: GroupsStorage,
+    group_addr_storage: GroupsAddrStorage,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Arc<Addr<UdpSend>>,
 }
@@ -22,7 +25,9 @@ impl ClientActor {
         ClientActor::create(|_| ClientActor {
             ssl_acceptor,
             udp_send,
-            storage: ClientsStorage::new(),
+            client_storage: ClientsStorage::new(),
+            group_storage: GroupsStorage::new(),
+            group_addr_storage: GroupsAddrStorage::new(),
         })
     }
 }
@@ -37,7 +42,7 @@ impl Handler<WebRtcRequest> for ClientActor {
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             WebRtcRequest::Dtls(message, addr) => {
-                let client_ref = self.storage.entry(addr).or_default();
+                let client_ref = self.client_storage.entry(addr).or_default();
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
                 ctx.add_message_stream(client_ref.outgoing_stream(addr));
@@ -88,21 +93,65 @@ impl Handler<WebRtcRequest> for ClientActor {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                let client = self.storage.entry(addr).or_default().get_client();
+                let udp_send = Arc::clone(&self.udp_send);
+                let client = self.client_storage.entry(addr).or_default().get_client();
+                let addresses = match self.group_storage.get(&addr) {
+                    Some(group_id) => match self.group_addr_storage.get(group_id) {
+                        Some(addresses) => Some(
+                            addresses
+                                .clone()
+                                .into_iter()
+                                .filter(|g_addr| *g_addr != addr)
+                                .collect::<Vec<SocketAddr>>(),
+                        ),
+                        None => None,
+                    },
+                    None => None,
+                };
+
                 ctx.spawn(
                     async move {
                         let mut client_unlocked = client.lock().await;
                         if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
-                            if is_rtcp(&message) {
-                                if let Err(e) =
-                                    rctp_handler(WebRtcRequest::Rtc(message, addr), Some(srtp))
+                            let message_processed = if is_rtcp(&message) {
+                                match rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
                                 {
-                                    warn!("rtp err: {}", e)
+                                    Ok(message) => Some(message),
+                                    Err(e) => {
+                                        warn!("rtp err: {}", e);
+                                        None
+                                    }
                                 }
-                            } else if let Err(e) =
-                                rtp_handler(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                            {
-                                warn!("rtp err: {}", e)
+                            } else {
+                                match rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp)) {
+                                    Ok(message) => Some(message),
+                                    Err(e) => {
+                                        warn!("rtp err: {}", e);
+                                        None
+                                    }
+                                }
+                            };
+
+                            if let Some(message) = message_processed {
+                                if let Some(addresses) = addresses {
+                                    let web_rtc_requests: Vec<Request<UdpSend, WebRtcRequest>> =
+                                        addresses
+                                            .into_iter()
+                                            .map(|addr| {
+                                                udp_send
+                                                    .send(WebRtcRequest::Rtc(message.clone(), addr))
+                                            })
+                                            .collect();
+
+                                    let is_sent = futures::future::join_all(web_rtc_requests)
+                                        .await
+                                        .into_iter()
+                                        .collect::<Result<Vec<()>, MailboxError>>();
+
+                                    if let Err(e) = is_sent {
+                                        warn!("udp send err: {}", e)
+                                    }
+                                }
                             }
                         }
                     }
@@ -143,7 +192,23 @@ impl Handler<DeleteMessage> for ClientActor {
         DeleteMessage(addr): DeleteMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.storage.remove(&addr).is_some()
+        self.client_storage.remove(&addr).is_some()
+    }
+}
+
+impl Handler<GroupId> for ClientActor {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        GroupId(group_id, addr): GroupId,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        if self.client_storage.contains_key(&addr) {
+            let group_addr_storage = self.group_addr_storage.entry(group_id).or_default();
+            group_addr_storage.push(addr);
+            self.group_storage.insert(addr, group_id);
+        }
     }
 }
 
