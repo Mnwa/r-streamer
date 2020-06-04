@@ -109,7 +109,7 @@
         try {
             const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
             console.log('Received local stream');
-            // localVideo.srcObject = stream;
+            localVideo.srcObject = stream;
             localStream = stream;
             callButton.disabled = false;
         } catch (e) {

@@ -114,22 +114,21 @@ impl Handler<WebRtcRequest> for ClientActor {
                         let mut client_unlocked = client.lock().await;
                         if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
                             let message_processed = if is_rtcp(&message) {
-                                match rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                                {
-                                    Ok(message) => Some(message),
-                                    Err(e) => {
+                                rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
+                                    .and_then(|message| srtp.protect_rtcp(&message))
+                                    .map_err(|e| {
                                         warn!("rtp err: {}", e);
-                                        None
-                                    }
-                                }
+                                        e
+                                    })
+                                    .ok()
                             } else {
-                                match rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp)) {
-                                    Ok(message) => Some(message),
-                                    Err(e) => {
+                                rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
+                                    .and_then(|message| srtp.protect(&message))
+                                    .map_err(|e| {
                                         warn!("rtp err: {}", e);
-                                        None
-                                    }
-                                }
+                                        e
+                                    })
+                                    .ok()
                             };
 
                             if let Some(message) = message_processed {
