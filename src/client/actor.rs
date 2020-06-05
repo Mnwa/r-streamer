@@ -144,18 +144,22 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     .map(|(addr, client)| {
                                         let mut message = message.clone();
                                         let udp_send = Arc::clone(&udp_send);
-                                        println!("want to sent: {:?}", message);
                                         async move {
                                             let mut client = client.lock().await;
                                             if let ClientState::Connected(_, srtp) =
                                                 &mut client.state
                                             {
                                                 if is_rtcp(&message) {
-                                                    message = srtp.protect_rtcp(&message).unwrap()
+                                                    match srtp.protect_rtcp(&message) {
+                                                        Ok(m) => message = m,
+                                                        Err(e) => warn!("protect rtcp err: {}", e),
+                                                    }
                                                 } else {
-                                                    message = srtp.protect(&message).unwrap()
+                                                    match srtp.protect(&message) {
+                                                        Ok(m) => message = m,
+                                                        Err(e) => warn!("protect rtp err: {}", e),
+                                                    }
                                                 }
-                                                println!("will sent {:?}", message);
                                             }
                                             udp_send.send(WebRtcRequest::Rtc(message, addr)).await
                                         }
