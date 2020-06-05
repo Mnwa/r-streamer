@@ -1,4 +1,4 @@
-use crate::client::clients::{ClientState, ClientsStorage};
+use crate::client::clients::{ClientState, ClientsRefStorage, ClientsStorage};
 use crate::client::dtls::{extract_dtls, push_dtls};
 use crate::client::group::{GroupId, GroupsAddrStorage, GroupsStorage};
 use crate::dtls::connector::connect;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
-    client_storage: ClientsStorage,
+    client_storage: ClientsRefStorage,
     group_storage: GroupsStorage,
     group_addr_storage: GroupsAddrStorage,
     ssl_acceptor: Arc<SslAcceptor>,
@@ -25,7 +25,7 @@ impl ClientActor {
         ClientActor::create(|_| ClientActor {
             ssl_acceptor,
             udp_send,
-            client_storage: ClientsStorage::new(),
+            client_storage: ClientsRefStorage::new(),
             group_storage: GroupsStorage::new(),
             group_addr_storage: GroupsAddrStorage::new(),
         })
@@ -102,7 +102,12 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 .clone()
                                 .into_iter()
                                 .filter(|g_addr| *g_addr != addr)
-                                .collect::<Vec<SocketAddr>>(),
+                                .filter_map(|g_addr| {
+                                    self.client_storage
+                                        .get(&g_addr)
+                                        .map(|client_ref| (g_addr, client_ref.get_client()))
+                                })
+                                .collect::<ClientsStorage>(),
                         ),
                         None => None,
                     },
@@ -115,7 +120,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                         if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
                             let message_processed = if is_rtcp(&message) {
                                 rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                                    .and_then(|message| srtp.protect_rtcp(&message))
                                     .map_err(|e| {
                                         warn!("rtp err: {}", e);
                                         e
@@ -123,7 +127,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     .ok()
                             } else {
                                 rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                                    .and_then(|message| srtp.protect(&message))
                                     .map_err(|e| {
                                         warn!("rtp err: {}", e);
                                         e
@@ -131,25 +134,41 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     .ok()
                             };
 
-                            if let Some(message) = message_processed {
-                                if let Some(addresses) = addresses {
-                                    let web_rtc_requests: Vec<Request<UdpSend, WebRtcRequest>> =
-                                        addresses
-                                            .into_iter()
-                                            .map(|addr| {
-                                                udp_send
-                                                    .send(WebRtcRequest::Rtc(message.clone(), addr))
-                                            })
-                                            .collect();
+                            let addresses_processed = addresses
+                                .filter(|addresses| !addresses.is_empty())
+                                .and_then(|addresses| Some((addresses, message_processed?)));
 
-                                    let is_sent = futures::future::join_all(web_rtc_requests)
-                                        .await
-                                        .into_iter()
-                                        .collect::<Result<Vec<()>, MailboxError>>();
+                            if let Some((addresses, message)) = addresses_processed {
+                                let web_rtc_requests: Vec<_> = addresses
+                                    .into_iter()
+                                    .map(|(addr, client)| {
+                                        let mut message = message.clone();
+                                        let udp_send = Arc::clone(&udp_send);
+                                        println!("want to sent: {:?}", message);
+                                        async move {
+                                            let mut client = client.lock().await;
+                                            if let ClientState::Connected(_, srtp) =
+                                                &mut client.state
+                                            {
+                                                if is_rtcp(&message) {
+                                                    message = srtp.protect_rtcp(&message).unwrap()
+                                                } else {
+                                                    message = srtp.protect(&message).unwrap()
+                                                }
+                                                println!("will sent {:?}", message);
+                                            }
+                                            udp_send.send(WebRtcRequest::Rtc(message, addr)).await
+                                        }
+                                    })
+                                    .collect();
 
-                                    if let Err(e) = is_sent {
-                                        warn!("udp send err: {}", e)
-                                    }
+                                let is_sent = futures::future::join_all(web_rtc_requests)
+                                    .await
+                                    .into_iter()
+                                    .collect::<Result<Vec<()>, MailboxError>>();
+
+                                if let Err(e) = is_sent {
+                                    warn!("udp send err: {}", e)
                                 }
                             }
                         }

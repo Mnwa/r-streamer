@@ -70,7 +70,8 @@ impl From<std::io::ErrorKind> for ClientError {
     }
 }
 
-pub type ClientsStorage = HashMap<SocketAddr, ClientRef>;
+pub type ClientsRefStorage = HashMap<SocketAddr, ClientRef>;
+pub type ClientsStorage = HashMap<SocketAddr, Arc<Mutex<Client>>>;
 
 pub struct ClientRef(Arc<Mutex<Client>>, ClientSslPacketsChannels);
 impl ClientRef {

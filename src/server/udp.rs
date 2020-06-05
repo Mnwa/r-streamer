@@ -2,7 +2,7 @@ use crate::client::actor::ClientActor;
 use crate::client::group::GroupId;
 use crate::client::sessions::{Session, SessionMessage, SessionsStorage};
 use crate::dtls::is_dtls;
-use crate::rtp::rtp::parse_rtp;
+use crate::rtp::rtp::{is_rtcp, parse_rtp};
 use crate::server::crypto::Crypto;
 use crate::server::meta::ServerMeta;
 use crate::stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest};
@@ -241,7 +241,7 @@ impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
         if let Some(stun) = parse_stun_binding_request(&buf) {
             return WebRtcRequest::Stun(stun, addr);
         }
-        if parse_rtp(&buf).is_some() {
+        if parse_rtp(&buf).is_some() || is_rtcp(&buf) {
             return WebRtcRequest::Rtc(buf, addr);
         }
         if is_dtls(&buf) {
