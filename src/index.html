@@ -1,4 +1,4 @@
-<html>
+<html lang="en">
 <head>
     <title>WebRTC Data Channel Echo Server Example</title>
 </head>
@@ -19,11 +19,13 @@
     <div class="box">
         <button id="startButton">Start</button>
         <button id="callButton">Call</button>
+
+        <button id="acceptButton">Accept</button>
         <button id="hangupButton">Hang Up</button>
     </div>
 
     <div class="box">
-        <span>SDP Semantics:</span>
+        <label for="sdpSemantics">SDP Semantics:</label>
         <select id="sdpSemantics">
             <option selected value="">Default</option>
             <option value="unified-plan">Unified Plan</option>
@@ -58,11 +60,13 @@
     const startButton = document.getElementById('startButton');
     const callButton = document.getElementById('callButton');
     const hangupButton = document.getElementById('hangupButton');
+    const acceptButton = document.getElementById('acceptButton');
     callButton.disabled = true;
     hangupButton.disabled = true;
     startButton.addEventListener('click', start);
     callButton.addEventListener('click', call);
     hangupButton.addEventListener('click', hangup);
+    acceptButton.addEventListener('click', receive);
 
     let startTime;
     const localVideo = document.getElementById('localVideo');
@@ -99,10 +103,6 @@
         return (pc === pc1) ? 'pc1' : 'pc2';
     }
 
-    function getOtherPc(pc) {
-        return (pc === pc1) ? pc2 : pc1;
-    }
-
     async function start() {
         console.log('Requesting local stream');
         startButton.disabled = true;
@@ -121,6 +121,44 @@
         const sdpSemanticsSelect = document.querySelector('#sdpSemantics');
         const option = sdpSemanticsSelect.options[sdpSemanticsSelect.selectedIndex];
         return option.value === '' ? {} : {sdpSemantics: option.value};
+    }
+
+    async function receive() {
+        const configuration = {
+            ...getSelectedSdpSemantics(),
+            iceServers: [{
+                urls: ["stun:stun.l.google.com:19302"]
+            }],
+        };
+
+        pc2 = new RTCPeerConnection(configuration);
+
+        pc2.addEventListener('icecandidate', e => onIceCandidate(pc2, e));
+        pc2.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc2, e));
+        pc2.addEventListener('track', gotRemoteStream);
+
+        const offer = await pc2.createOffer(offerOptions);
+
+        try {
+            const sdp = await fetch('/parse_sdp', {
+                method: 'POST',
+                body: offer.sdp,
+            }).then(res => res.text());
+            const answer = new RTCSessionDescription({
+                sdp,
+                type: 'answer',
+            })
+            console.log('pc2 setRemoteDescription start');
+            try {
+                await pc2.setLocalDescription(offer);
+                await pc2.setRemoteDescription(answer);
+                onSetRemoteSuccess(pc2);
+            } catch (e) {
+                onSetSessionDescriptionError(e);
+            }
+        } catch (e) {
+            onCreateSessionDescriptionError(e);
+        }
     }
 
     async function call() {
@@ -146,12 +184,8 @@
         pc1 = new RTCPeerConnection(configuration);
         console.log('Created local peer connection object pc1');
         pc1.addEventListener('icecandidate', e => onIceCandidate(pc1, e));
-        pc2 = new RTCPeerConnection(configuration);
         console.log('Created remote peer connection object pc2');
-        pc2.addEventListener('icecandidate', e => onIceCandidate(pc2, e));
         pc1.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc1, e));
-        pc2.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc2, e));
-        pc2.addEventListener('track', gotRemoteStream);
 
         localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
         console.log('Added local stream to pc1');
@@ -178,14 +212,6 @@
         } catch (e) {
             onSetSessionDescriptionError();
         }
-
-        // console.log('pc2 setRemoteDescription start');
-        // try {
-        //     await pc2.setRemoteDescription(desc);
-        //     onSetRemoteSuccess(pc2);
-        // } catch (e) {
-        //     onSetSessionDescriptionError();
-        // }
 
         console.log('pc2 createAnswer start');
         // Since the 'remote' side has no media stream we need
