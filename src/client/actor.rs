@@ -84,7 +84,14 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 .await
                                 .map_err(|_| std::io::ErrorKind::TimedOut.into())
                                 .and_then(|r| r);
-                                println!("{:?}", result);
+
+                                drop(client_unlocked);
+
+                                if matches!(result, Ok(0)) {
+                                    if let Err(e) = self_addr.send(DeleteMessage(addr)).await {
+                                        warn!("delete err: {}", e)
+                                    }
+                                }
                             }
                             ClientState::Shutdown => {}
                         }
