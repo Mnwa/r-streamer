@@ -7,14 +7,16 @@ use crate::server::crypto::Crypto;
 use crate::server::meta::ServerMeta;
 use crate::stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest};
 use actix::prelude::*;
-use futures::StreamExt;
 use log::{info, warn};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
+use tokio::stream::StreamExt;
 use tokio::sync::Mutex;
+use tokio::time::Duration;
 
 pub struct UdpRecv {
     send: Arc<Addr<UdpSend>>,
@@ -52,6 +54,7 @@ impl UdpRecv {
             .map(WebRtcRequest::from);
 
             ctx.add_stream(stream);
+            ctx.add_stream(tokio::time::interval(Duration::from_secs(60)).map(|_| ClearData));
 
             UdpRecv {
                 send,
@@ -77,7 +80,8 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
-                if let Some(group_id) = self.sessions.get(&session) {
+                if let Some((group_id, ttl)) = self.sessions.get_mut(&session) {
+                    *ttl = SystemTime::now();
                     let group_id = *group_id;
                     let udp_send = Arc::clone(&self.send);
                     let dtls = Arc::clone(&self.dtls);
@@ -121,6 +125,24 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
     }
 }
 
+impl StreamHandler<ClearData> for UdpRecv {
+    fn handle(&mut self, _: ClearData, _ctx: &mut Context<Self>) {
+        let sessions_to_remove: Vec<Session> = self
+            .sessions
+            .iter()
+            .filter(|(_, (_, time))| match time.elapsed() {
+                Ok(d) => d > Duration::from_secs(60),
+                Err(_e) => false,
+            })
+            .map(|(s, (_, _))| s.clone())
+            .collect();
+
+        sessions_to_remove.into_iter().for_each(|s| {
+            self.sessions.remove(&s);
+        });
+    }
+}
+
 impl Handler<SessionMessage> for UdpRecv {
     type Result = bool;
 
@@ -129,7 +151,7 @@ impl Handler<SessionMessage> for UdpRecv {
         SessionMessage(session, id): SessionMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.sessions.insert(session, id);
+        self.sessions.insert(session, (id, SystemTime::now()));
         true
     }
 }
@@ -266,3 +288,9 @@ pub struct ServerData {
 #[derive(Message)]
 #[rtype(result = "ServerData")]
 pub struct ServerDataRequest;
+
+struct ClearData;
+
+impl Message for ClearData {
+    type Result = ();
+}
