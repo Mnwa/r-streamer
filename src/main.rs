@@ -1,9 +1,9 @@
 mod client;
+mod dtls;
 mod rtp;
 mod sdp;
 mod server;
 mod stun;
-mod dtls;
 
 use hyper::{
     server::conn::AddrStream,
