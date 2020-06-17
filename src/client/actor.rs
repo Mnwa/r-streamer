@@ -88,8 +88,10 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 drop(client_unlocked);
 
                                 if matches!(result, Ok(0)) {
-                                    if let Err(e) = self_addr.send(DeleteMessage(addr)).await {
-                                        warn!("delete err: {}", e)
+                                    match self_addr.send(DeleteMessage(addr)).await {
+                                        Err(e) => warn!("delete err: {}", e),
+                                        Ok(d) if d => println!("success deleted"),
+                                        Ok(_) => println!("fail deleting"),
                                     }
                                 }
                             }
@@ -221,7 +223,11 @@ impl Handler<DeleteMessage> for ClientActor {
         DeleteMessage(addr): DeleteMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.client_storage.remove(&addr).is_some()
+        self.client_storage
+            .remove(&addr)
+            .and_then(|_| self.group_storage.remove(&addr))
+            .and_then(|group_id| self.group_addr_storage.remove(&group_id))
+            .is_some()
     }
 }
 
