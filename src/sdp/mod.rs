@@ -14,7 +14,9 @@ use webrtc_sdp::attribute_type::SdpAttribute::{
 use webrtc_sdp::attribute_type::SdpAttributeFingerprintHashType::Sha256;
 use webrtc_sdp::attribute_type::SdpAttributeGroupSemantic::Bundle;
 use webrtc_sdp::attribute_type::SdpAttributeSetup::Passive;
-use webrtc_sdp::attribute_type::SdpAttributeType::{IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup};
+use webrtc_sdp::attribute_type::SdpAttributeType::{
+    Group as GroupType, IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup,
+};
 use webrtc_sdp::attribute_type::{
     SdpAttribute, SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
     SdpAttributeFingerprint, SdpAttributeGroup, SdpAttributeMsidSemantic, SdpAttributeRtcp,
@@ -61,6 +63,13 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
     origin.session_id = rng.gen();
     origin.unicast_addr = ExplicitlyTypedAddress::from(server_data.addr.ip());
 
+    let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
+        Group(SdpAttributeGroup {
+            semantics: Bundle,
+            tags: vec![String::from("0"), String::from("1")],
+        })
+    });
+
     let media: Vec<SdpMedia> = req
         .media
         .into_iter()
@@ -88,11 +97,8 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
         msids: Vec::new(),
     }))
     .unwrap();
-    res.add_attribute(Group(SdpAttributeGroup {
-        semantics: Bundle,
-        tags: vec![String::from("0"), String::from("1")],
-    }))
-    .unwrap();
+
+    res.add_attribute(group).unwrap();
 
     res.add_attribute(IceLite).unwrap();
 
