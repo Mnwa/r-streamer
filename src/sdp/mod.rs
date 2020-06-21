@@ -35,6 +35,7 @@ use webrtc_sdp::{
 pub async fn generate_response(
     sdp: &str,
     recv: Arc<Addr<UdpRecv>>,
+    group_id: usize,
 ) -> Result<SdpSession, SdpResponseGeneratorError> {
     let req = parse_sdp(sdp, true)?;
 
@@ -62,7 +63,7 @@ pub async fn generate_response(
         })
         .map(|client_user| {
             let session = Session::new(server_user.clone(), client_user);
-            let session_message = SessionMessage(session, 1);
+            let session_message = SessionMessage(session, group_id);
             recv.send(session_message)
         })
         .collect();

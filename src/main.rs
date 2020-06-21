@@ -13,7 +13,7 @@ use actix::Addr;
 use actix_files::NamedFile;
 use actix_web::{
     get, post,
-    web::{Bytes, Data},
+    web::{Bytes, Data, Path},
     App, HttpRequest, HttpResponse, HttpServer, Result,
 };
 use log::info;
@@ -50,11 +50,16 @@ async fn index(req: HttpRequest) -> Result<NamedFile> {
     Ok(NamedFile::open("public/index.html")?)
 }
 
-#[post("/parse_sdp")]
-async fn parse_sdp(body: Bytes, recv: Data<Addr<UdpRecv>>) -> Result<HttpResponse> {
+#[post("/parse_sdp/{group_id}/")]
+async fn parse_sdp(
+    body: Bytes,
+    path_info: Path<(usize,)>,
+    recv: Data<Addr<UdpRecv>>,
+) -> Result<HttpResponse> {
+    let group_id = path_info.0;
     let body = String::from_utf8(body.to_vec()).map_err(|_| HttpResponse::BadRequest().finish())?;
 
-    let sdp = generate_response(&body, recv.into_inner())
+    let sdp = generate_response(&body, recv.into_inner(), group_id)
         .await
         .map_err(|e| HttpResponse::BadRequest().body(e.to_string()))?;
 

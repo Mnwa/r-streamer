@@ -23,6 +23,12 @@
         <button id="acceptButton">Accept</button>
         <button id="hangupButton">Hang Up</button>
     </div>
+    <div class="box">
+        <label>
+            Group ID
+            <input id="groupIdInput" type="number" value="1">
+        </label>
+    </div>
 
     <div class="box">
         <label for="sdpSemantics">SDP Semantics:</label>
@@ -61,6 +67,7 @@
     const callButton = document.getElementById('callButton');
     const hangupButton = document.getElementById('hangupButton');
     const acceptButton = document.getElementById('acceptButton');
+    const groupIdInput = document.getElementById('groupIdInput');
     callButton.disabled = true;
     hangupButton.disabled = true;
     startButton.addEventListener('click', start);
@@ -140,7 +147,7 @@
         const offer = await pc2.createOffer(offerOptions);
 
         try {
-            const sdp = await fetch('/parse_sdp', {
+            const sdp = await fetch('/parse_sdp/' + groupIdInput.value + '/', {
                 method: 'POST',
                 body: offer.sdp,
             }).then(res => res.text());
@@ -218,7 +225,7 @@
         // to pass in the right constraints in order for it to
         // accept the incoming offer of audio and video.
         try {
-            const sdp = await fetch('/parse_sdp', {
+            const sdp = await fetch('/parse_sdp/' + groupIdInput.value + '/', {
                 method: 'POST',
                 body: desc.sdp,
             }).then(res => res.text());
@@ -310,5 +317,10 @@
         callButton.disabled = false;
     }
 </script>
+<style>
+    .box {
+        margin: 20px auto;
+    }
+</style>
 </body>
 </html>
