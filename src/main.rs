@@ -5,14 +5,18 @@ mod sdp;
 mod server;
 mod stun;
 
-use log::info;
-
-use crate::sdp::generate_response;
-use crate::server::udp::{create_udp, UdpRecv};
+use crate::{
+    sdp::generate_response,
+    server::udp::{create_udp, UdpRecv},
+};
 use actix::Addr;
 use actix_files::NamedFile;
-use actix_web::web::{Bytes, Data};
-use actix_web::{get, post, App, HttpRequest, HttpResponse, HttpServer, Result};
+use actix_web::{
+    get, post,
+    web::{Bytes, Data},
+    App, HttpRequest, HttpResponse, HttpServer, Result,
+};
+use log::info;
 use std::net::SocketAddr;
 
 #[actix_rt::main]

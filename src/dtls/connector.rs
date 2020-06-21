@@ -1,5 +1,7 @@
-use crate::client::clients::{Client, ClientError, ClientState};
-use crate::rtp::srtp::SrtpTransport;
+use crate::{
+    client::clients::{Client, ClientError, ClientState},
+    rtp::srtp::SrtpTransport,
+};
 use log::warn;
 use openssl::ssl::SslAcceptor;
 use std::sync::Arc;

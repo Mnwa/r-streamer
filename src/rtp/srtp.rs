@@ -1,9 +1,10 @@
 use bytes::BytesMut;
-use openssl::error::ErrorStack;
-use openssl::ssl::SslRef;
+use openssl::{error::ErrorStack, ssl::SslRef};
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
-use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+};
 
 #[derive(Debug)]
 pub struct SrtpTransport {

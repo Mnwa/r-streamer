@@ -1,15 +1,16 @@
-use crate::client::stream::{ClientSslPackets, ClientSslPacketsChannels};
-use crate::dtls::message::DtlsMessage;
-use crate::rtp::srtp::{ErrorParse, SrtpTransport};
-use futures::channel::mpsc::SendError;
-use futures::lock::Mutex;
-use futures::prelude::*;
-use futures::stream::FusedStream;
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{Display, Formatter};
-use std::net::SocketAddr;
-use std::sync::Arc;
+use crate::{
+    client::stream::{ClientSslPackets, ClientSslPacketsChannels},
+    dtls::message::DtlsMessage,
+    rtp::srtp::{ErrorParse, SrtpTransport},
+};
+use futures::{channel::mpsc::SendError, lock::Mutex, prelude::*, stream::FusedStream};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt::{Display, Formatter},
+    net::SocketAddr,
+    sync::Arc,
+};
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]

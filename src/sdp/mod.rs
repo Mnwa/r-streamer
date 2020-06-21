@@ -1,31 +1,36 @@
-use crate::client::sessions::{Session, SessionMessage};
-use crate::server::udp::{ServerDataRequest, UdpRecv};
-use actix::prelude::Request;
-use actix::{Addr, MailboxError};
-use rand::prelude::ThreadRng;
-use rand::Rng;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use webrtc_sdp::address::{Address, ExplicitlyTypedAddress};
-use webrtc_sdp::attribute_type::SdpAttribute::{
-    Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
-    Sendrecv as SendrecvAttr, Setup,
+use crate::{
+    client::sessions::{Session, SessionMessage},
+    server::udp::{ServerDataRequest, UdpRecv},
 };
-use webrtc_sdp::attribute_type::SdpAttributeFingerprintHashType::Sha256;
-use webrtc_sdp::attribute_type::SdpAttributeGroupSemantic::Bundle;
-use webrtc_sdp::attribute_type::SdpAttributeSetup::Passive;
-use webrtc_sdp::attribute_type::SdpAttributeType::{
-    Group as GroupType, IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup,
+use actix::prelude::*;
+use rand::{prelude::ThreadRng, Rng};
+use std::{
+    error::Error,
+    fmt::{Debug, Display, Formatter},
+    net::SocketAddr,
+    sync::Arc,
 };
-use webrtc_sdp::attribute_type::{
-    SdpAttribute, SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
-    SdpAttributeFingerprint, SdpAttributeGroup, SdpAttributeMsidSemantic, SdpAttributeRtcp,
+use webrtc_sdp::{
+    address::{Address, ExplicitlyTypedAddress},
+    attribute_type::{
+        SdpAttribute,
+        SdpAttribute::{
+            Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
+            Sendrecv as SendrecvAttr, Setup,
+        },
+        SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
+        SdpAttributeFingerprint,
+        SdpAttributeFingerprintHashType::Sha256,
+        SdpAttributeGroup,
+        SdpAttributeGroupSemantic::Bundle,
+        SdpAttributeMsidSemantic, SdpAttributeRtcp,
+        SdpAttributeSetup::Passive,
+        SdpAttributeType::{Group as GroupType, IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup},
+    },
+    error::{SdpParserError, SdpParserInternalError},
+    media_type::SdpMedia,
+    parse_sdp, SdpConnection, SdpSession, SdpTiming,
 };
-use webrtc_sdp::error::{SdpParserError, SdpParserInternalError};
-use webrtc_sdp::media_type::SdpMedia;
-use webrtc_sdp::{parse_sdp, SdpConnection, SdpSession, SdpTiming};
 
 pub async fn generate_response(
     sdp: &str,

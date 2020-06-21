@@ -1,13 +1,16 @@
-use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-use futures::lock::Mutex;
-use futures::stream::FusedStream;
-use futures::{FutureExt, SinkExt, StreamExt};
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use tokio::io::Error;
-use tokio::prelude::*;
+use futures::{
+    channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
+    lock::Mutex,
+    stream::FusedStream,
+    FutureExt, SinkExt, StreamExt,
+};
+use std::{
+    fmt::{Debug, Formatter},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::{io::Error, prelude::*};
 
 pub struct ClientSslPackets {
     incoming_reader: IncomingReader, // read here to decrypt request

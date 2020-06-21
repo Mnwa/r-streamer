@@ -1,6 +1,5 @@
 use actix::prelude::*;
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 pub type GroupsStorage = HashMap<SocketAddr, usize>;
 pub type GroupsAddrStorage = HashMap<usize, Vec<SocketAddr>>;

@@ -1,5 +1,7 @@
-use crate::client::clients::{Client, ClientError, ClientState};
-use crate::client::stream::IncomingWriter;
+use crate::{
+    client::clients::{Client, ClientError, ClientState},
+    client::stream::IncomingWriter,
+};
 use futures::prelude::*;
 use tokio::prelude::*;
 

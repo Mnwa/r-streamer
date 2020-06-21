@@ -1,5 +1,7 @@
-use crate::rtp::srtp::{ErrorParse, SrtpTransport};
-use crate::server::udp::WebRtcRequest;
+use crate::{
+    rtp::srtp::{ErrorParse, SrtpTransport},
+    server::udp::WebRtcRequest,
+};
 use rtp_rs::RtpReader;
 
 pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
