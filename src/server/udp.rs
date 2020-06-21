@@ -234,7 +234,7 @@ impl Handler<WebRtcRequest> for UdpSend {
     }
 }
 
-pub async fn create_udp(addr: SocketAddr) -> (Arc<Addr<UdpRecv>>, Arc<Addr<UdpSend>>) {
+pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Arc<Addr<UdpSend>>) {
     let server = UdpSocket::bind(addr).await.expect("udp must be up");
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
@@ -248,7 +248,7 @@ pub async fn create_udp(addr: SocketAddr) -> (Arc<Addr<UdpRecv>>, Arc<Addr<UdpSe
     ));
     let udp_recv = UdpRecv::new(recv, Arc::clone(&udp_send), dtls, data);
 
-    (Arc::new(udp_recv), Arc::clone(&udp_send))
+    (udp_recv, Arc::clone(&udp_send))
 }
 
 #[derive(Debug, Clone)]
