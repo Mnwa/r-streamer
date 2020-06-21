@@ -61,11 +61,9 @@ pub async fn generate_response(
                     .replace("ice-ufrag:", ""),
             )
         })
-        .map(|client_user| {
-            let session = Session::new(server_user.clone(), client_user);
-            let session_message = SessionMessage(session, group_id);
-            recv.send(session_message)
-        })
+        .map(|client_user| Session::new(server_user.clone(), client_user))
+        .map(|session| SessionMessage(session, group_id))
+        .map(|session_message| recv.send(session_message))
         .collect();
 
     let _inserted = futures::future::join_all(sessions)
