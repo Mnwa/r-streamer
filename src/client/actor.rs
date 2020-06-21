@@ -8,7 +8,7 @@ use crate::{
         connector::connect,
         message::{DtlsMessage, MessageType},
     },
-    rtp::rtp::{is_rtcp, rtcp_processor, rtp_processor},
+    rtp::core::{is_rtcp, rtcp_processor, rtp_processor},
     server::udp::{UdpSend, WebRtcRequest},
 };
 use actix::prelude::*;

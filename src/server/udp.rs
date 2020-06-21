@@ -5,7 +5,7 @@ use crate::{
         sessions::{Session, SessionMessage, SessionsStorage},
     },
     dtls::is_dtls,
-    rtp::rtp::{is_rtcp, parse_rtp},
+    rtp::core::{is_rtcp, parse_rtp},
     server::{crypto::Crypto, meta::ServerMeta},
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };

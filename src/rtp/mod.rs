@@ -1,2 +1,2 @@
-pub mod rtp;
+pub mod core;
 pub mod srtp;
