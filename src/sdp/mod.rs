@@ -80,7 +80,12 @@ pub async fn generate_response(
     let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
         Group(SdpAttributeGroup {
             semantics: Bundle,
-            tags: vec![String::from("0"), String::from("1")],
+            tags: req
+                .media
+                .iter()
+                .enumerate()
+                .map(|(k, _v)| k.to_string())
+                .collect(),
         })
     });
 
