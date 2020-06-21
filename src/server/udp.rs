@@ -192,8 +192,15 @@ impl Handler<WebRtcRequest> for UdpSend {
                     addr,
                     self.data.meta.password.as_bytes(),
                     &mut message_buf,
-                )
-                .unwrap();
+                );
+
+                let n = match n {
+                    Ok(n) => n,
+                    Err(e) => {
+                        warn!("error on writing stun response: {}", e);
+                        return;
+                    }
+                };
 
                 message_buf.truncate(n);
                 ctx.spawn(

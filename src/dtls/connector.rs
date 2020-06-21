@@ -26,7 +26,7 @@ pub async fn connect(
         }
     };
 
-    let srtp_transport = SrtpTransport::new(ssl_stream.ssl()).unwrap();
+    let srtp_transport = SrtpTransport::new(ssl_stream.ssl())?;
 
     client.state = ClientState::Connected(ssl_stream, srtp_transport);
     Ok(())

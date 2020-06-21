@@ -1,6 +1,6 @@
 use crate::client::stream::{ClientSslPackets, ClientSslPacketsChannels};
 use crate::dtls::message::DtlsMessage;
-use crate::rtp::srtp::SrtpTransport;
+use crate::rtp::srtp::{ErrorParse, SrtpTransport};
 use futures::channel::mpsc::SendError;
 use futures::lock::Mutex;
 use futures::prelude::*;
@@ -40,6 +40,7 @@ pub enum ClientError {
     Receive(SendError),
     NotConnected,
     Read(std::io::Error),
+    SrtpParseError(ErrorParse),
 }
 
 impl Display for ClientError {
@@ -48,6 +49,7 @@ impl Display for ClientError {
             ClientError::Receive(e) => write!(f, "Receive: {}", e),
             ClientError::NotConnected => write!(f, "Client not connected"),
             ClientError::Read(e) => write!(f, "Read: {}", e),
+            ClientError::SrtpParseError(e) => write!(f, "Srtp parsing error: {}", e),
         }
     }
 }
@@ -67,6 +69,11 @@ impl From<std::io::Error> for ClientError {
 impl From<std::io::ErrorKind> for ClientError {
     fn from(e: std::io::ErrorKind) -> Self {
         ClientError::Read(e.into())
+    }
+}
+impl From<ErrorParse> for ClientError {
+    fn from(e: ErrorParse) -> Self {
+        ClientError::SrtpParseError(e)
     }
 }
 
