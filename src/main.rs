@@ -52,7 +52,7 @@ async fn parse_sdp(body: Bytes, recv: Data<Addr<UdpRecv>>) -> Result<HttpRespons
 
     let sdp = generate_response(&body, recv.into_inner())
         .await
-        .ok_or_else(|| HttpResponse::BadRequest().finish())?;
+        .map_err(|e| HttpResponse::BadRequest().body(e.to_string()))?;
 
     Ok(sdp.to_string().replace("\r\n\r\n", "\r\n").into())
 }

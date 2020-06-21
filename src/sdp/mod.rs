@@ -4,6 +4,8 @@ use actix::prelude::Request;
 use actix::{Addr, MailboxError};
 use rand::prelude::ThreadRng;
 use rand::Rng;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use webrtc_sdp::address::{Address, ExplicitlyTypedAddress};
@@ -21,17 +23,23 @@ use webrtc_sdp::attribute_type::{
     SdpAttribute, SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
     SdpAttributeFingerprint, SdpAttributeGroup, SdpAttributeMsidSemantic, SdpAttributeRtcp,
 };
-use webrtc_sdp::error::SdpParserInternalError;
+use webrtc_sdp::error::{SdpParserError, SdpParserInternalError};
 use webrtc_sdp::media_type::SdpMedia;
 use webrtc_sdp::{parse_sdp, SdpConnection, SdpSession, SdpTiming};
 
-pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<SdpSession> {
-    let req = parse_sdp(sdp, true).unwrap();
+pub async fn generate_response(
+    sdp: &str,
+    recv: Arc<Addr<UdpRecv>>,
+) -> Result<SdpSession, SdpResponseGeneratorError> {
+    let req = parse_sdp(sdp, true)?;
 
-    let server_data = recv.send(ServerDataRequest).await.unwrap();
+    let server_data = recv.send(ServerDataRequest).await?;
 
     let version = req.version;
-    let session = req.session.clone()?;
+    let session = req
+        .session
+        .clone()
+        .ok_or_else(|| SdpResponseGeneratorError::from("Session is empty"))?;
     let mut origin = req.get_origin().clone();
 
     let server_user = server_data.meta.user.clone();
@@ -84,28 +92,26 @@ pub async fn generate_response(sdp: &str, recv: Arc<Addr<UdpRecv>>) -> Option<Sd
                 server_data.crypto.digest.clone(),
                 server_data.addr,
                 &mut rng,
-            )
-            .unwrap();
+            )?;
             replace_connection(m.get_connection(), server_data.addr);
-            m
+            Ok(m)
         })
-        .collect();
+        .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;
 
     let mut res = SdpSession::new(version, origin, session);
     res.add_attribute(MsidSemantic(SdpAttributeMsidSemantic {
         semantic: String::from("WMS"),
         msids: Vec::new(),
-    }))
-    .unwrap();
+    }))?;
 
-    res.add_attribute(group).unwrap();
+    res.add_attribute(group)?;
 
-    res.add_attribute(IceLite).unwrap();
+    res.add_attribute(IceLite)?;
 
     res.set_timing(SdpTiming { start: 0, stop: 0 });
 
     res.media = media;
-    Some(res)
+    Ok(res)
 }
 
 fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
@@ -167,4 +173,49 @@ fn set_attributes(
     }))?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+pub enum SdpResponseGeneratorError {
+    SdpParserError(SdpParserError),
+    SdpParserInternalError(SdpParserInternalError),
+    MailBoxError(MailboxError),
+    CustomError(String),
+}
+
+impl Display for SdpResponseGeneratorError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SdpResponseGeneratorError::SdpParserError(e) => std::fmt::Display::fmt(&e, f),
+            SdpResponseGeneratorError::SdpParserInternalError(e) => std::fmt::Display::fmt(&e, f),
+            SdpResponseGeneratorError::MailBoxError(_) => write!(f, "Udp receiver is broken"),
+            SdpResponseGeneratorError::CustomError(m) => write!(f, "{}", m),
+        }
+    }
+}
+
+impl Error for SdpResponseGeneratorError {}
+
+impl From<SdpParserError> for SdpResponseGeneratorError {
+    fn from(e: SdpParserError) -> Self {
+        SdpResponseGeneratorError::SdpParserError(e)
+    }
+}
+
+impl From<SdpParserInternalError> for SdpResponseGeneratorError {
+    fn from(e: SdpParserInternalError) -> Self {
+        SdpResponseGeneratorError::SdpParserInternalError(e)
+    }
+}
+
+impl From<MailboxError> for SdpResponseGeneratorError {
+    fn from(e: MailboxError) -> Self {
+        SdpResponseGeneratorError::MailBoxError(e)
+    }
+}
+
+impl From<&str> for SdpResponseGeneratorError {
+    fn from(e: &str) -> Self {
+        SdpResponseGeneratorError::CustomError(e.into())
+    }
 }
