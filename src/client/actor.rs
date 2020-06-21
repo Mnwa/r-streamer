@@ -135,14 +135,18 @@ impl Handler<WebRtcRequest> for ClientActor {
                             let message_processed = if is_rtcp(&message) {
                                 rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
                                     .map_err(|e| {
-                                        warn!("rtp err: {}", e);
+                                        if !e.should_ignored() {
+                                            warn!("rtp err: {}", e);
+                                        }
                                         e
                                     })
                                     .ok()
                             } else {
                                 rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
                                     .map_err(|e| {
-                                        warn!("rtp err: {}", e);
+                                        if !e.should_ignored() {
+                                            warn!("rtp err: {}", e);
+                                        }
                                         e
                                     })
                                     .ok()

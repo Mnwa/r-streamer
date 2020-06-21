@@ -71,6 +71,13 @@ pub enum ErrorParse {
     Srtp(ErrorSrtp),
     UnsupportedProfile(String),
     UnsupportedRequest(String),
+    UnsupportedFormat,
+}
+
+impl ErrorParse {
+    pub fn should_ignored(&self) -> bool {
+        matches!(self, ErrorParse::UnsupportedFormat)
+    }
 }
 
 impl Display for ErrorParse {
@@ -80,6 +87,7 @@ impl Display for ErrorParse {
             ErrorParse::Srtp(e) => write!(f, "{:?}", e),
             ErrorParse::UnsupportedProfile(e) => write!(f, "Unsupported profile: {}", e),
             ErrorParse::UnsupportedRequest(e) => write!(f, "Unsupported request: {}", e),
+            ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
         }
     }
 }

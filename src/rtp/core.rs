@@ -1,8 +1,9 @@
-use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
+use crate::rtp::srtp::ErrorParse::{UnsupportedFormat, UnsupportedRequest};
 use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
 };
+use bitreader::BitReader;
 use rtp_rs::RtpReader;
 
 pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
@@ -17,6 +18,20 @@ pub fn rtp_processor(
         if let Some(transport) = transport {
             message = transport.unprotect(&message)?;
         }
+
+        let mut reader = BitReader::new(&message);
+
+        reader.skip(2).unwrap();
+        reader.skip(1).unwrap();
+        reader.skip(1).unwrap();
+        reader.skip(4).unwrap();
+        reader.skip(1).unwrap();
+
+        // filtering audio messages
+        if reader.read_u8(7).unwrap() == 111 {
+            return Err(UnsupportedFormat);
+        }
+
         return Ok(message);
     }
     Err(UnsupportedRequest(format!(
