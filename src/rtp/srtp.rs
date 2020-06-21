@@ -19,8 +19,10 @@ impl SrtpTransport {
                 CryptoPolicy::AesCm128HmacSha1Bit80,
                 CryptoPolicy::AesCm128HmacSha1Bit80,
             ),
-            Some(profile) => return Err(ErrorParse::UnsupportedProfile(profile.name())),
-            None => return Err(ErrorParse::UnsupportedProfile("empty")),
+            Some(profile) => {
+                return Err(ErrorParse::UnsupportedProfile(profile.name().to_string()))
+            }
+            None => return Err(ErrorParse::UnsupportedProfile("empty".to_string())),
         };
 
         let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
@@ -67,7 +69,8 @@ impl SrtpTransport {
 pub enum ErrorParse {
     Openssl(ErrorStack),
     Srtp(ErrorSrtp),
-    UnsupportedProfile(&'static str),
+    UnsupportedProfile(String),
+    UnsupportedRequest(String),
 }
 
 impl Display for ErrorParse {
@@ -76,6 +79,7 @@ impl Display for ErrorParse {
             ErrorParse::Openssl(e) => write!(f, "{}", e),
             ErrorParse::Srtp(e) => write!(f, "{:?}", e),
             ErrorParse::UnsupportedProfile(e) => write!(f, "Unsupported profile: {}", e),
+            ErrorParse::UnsupportedRequest(e) => write!(f, "Unsupported request: {}", e),
         }
     }
 }

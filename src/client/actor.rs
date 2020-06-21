@@ -194,7 +194,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                     .into_actor(self),
                 );
             }
-            WebRtcRequest::Stun(_, _) => unimplemented!(),
+            WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
+            WebRtcRequest::Unknown => warn!("unknown request"),
         }
     }
 }
@@ -204,7 +205,7 @@ impl Handler<DtlsMessage> for ClientActor {
 
     fn handle(&mut self, item: DtlsMessage, ctx: &mut Context<Self>) {
         match item.get_type() {
-            MessageType::Incoming => unimplemented!(),
+            MessageType::Incoming => warn!("accepted incoming dtls message in the ClientActor"),
             MessageType::Outgoing => {
                 let udp_send = Arc::clone(&self.udp_send);
                 ctx.spawn(

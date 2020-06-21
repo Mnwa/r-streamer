@@ -123,6 +123,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                     .into_actor(self),
                 );
             }
+            WebRtcRequest::Unknown => warn!("unknown request"),
         }
     }
 }
@@ -239,6 +240,7 @@ impl Handler<WebRtcRequest> for UdpSend {
                     .into_actor(self),
                 );
             }
+            WebRtcRequest::Unknown => warn!("unknown request"),
         }
     }
 }
@@ -265,6 +267,18 @@ pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
     Dtls(Vec<u8>, SocketAddr),
     Rtc(Vec<u8>, SocketAddr),
+    Unknown,
+}
+
+impl WebRtcRequest {
+    pub fn get_type(&self) -> &str {
+        match self {
+            WebRtcRequest::Stun(_, _) => "stun",
+            WebRtcRequest::Dtls(_, _) => "dtls",
+            WebRtcRequest::Rtc(_, _) => "rtp",
+            WebRtcRequest::Unknown => "unknown",
+        }
+    }
 }
 
 impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
@@ -279,7 +293,7 @@ impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
             return WebRtcRequest::Dtls(buf, addr);
         }
 
-        unimplemented!()
+        WebRtcRequest::Unknown
     }
 }
 

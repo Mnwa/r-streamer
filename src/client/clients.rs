@@ -40,6 +40,7 @@ pub enum ClientState {
 pub enum ClientError {
     Receive(SendError),
     NotConnected,
+    AlreadyConnected,
     Read(std::io::Error),
     SrtpParseError(ErrorParse),
 }
@@ -49,6 +50,7 @@ impl Display for ClientError {
         match self {
             ClientError::Receive(e) => write!(f, "Receive: {}", e),
             ClientError::NotConnected => write!(f, "Client not connected"),
+            ClientError::AlreadyConnected => write!(f, "Client already connected"),
             ClientError::Read(e) => write!(f, "Read: {}", e),
             ClientError::SrtpParseError(e) => write!(f, "Srtp parsing error: {}", e),
         }

@@ -1,3 +1,4 @@
+use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
 use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
@@ -18,7 +19,10 @@ pub fn rtp_processor(
         }
         return Ok(message);
     }
-    unimplemented!()
+    Err(UnsupportedRequest(format!(
+        "unsupported request {}, when waiting rtc",
+        request.get_type()
+    )))
 }
 
 pub fn rtcp_processor(
@@ -31,7 +35,10 @@ pub fn rtcp_processor(
         }
         return Ok(message);
     }
-    unimplemented!()
+    Err(UnsupportedRequest(format!(
+        "unsupported request {}, when waiting rtc",
+        request.get_type()
+    )))
 }
 
 pub fn is_rtcp(buf: &[u8]) -> bool {

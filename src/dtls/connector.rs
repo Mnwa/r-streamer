@@ -16,7 +16,7 @@ pub async fn connect(
         ClientState::New(stream) => timeout(Duration::from_secs(10), accept(&ssl_acceptor, stream))
             .await
             .map_err(|_| std::io::ErrorKind::TimedOut)?,
-        ClientState::Connected(_, _) => unimplemented!(),
+        ClientState::Connected(_, _) => return Err(ClientError::AlreadyConnected),
         ClientState::Shutdown => return Err(std::io::ErrorKind::WouldBlock.into()),
     };
 
