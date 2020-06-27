@@ -19,16 +19,9 @@ pub fn rtp_processor(
             message = transport.unprotect(&message)?;
         }
 
-        let mut reader = BitReader::new(&message);
+        let rtp_header = RtpHeader::from_buf(&message)?;
 
-        reader.skip(2).unwrap();
-        reader.skip(1).unwrap();
-        reader.skip(1).unwrap();
-        reader.skip(4).unwrap();
-        reader.skip(1).unwrap();
-
-        // filtering audio messages
-        if reader.read_u8(7).unwrap() == 111 {
+        if rtp_header.payload == 111 {
             return Err(UnsupportedFormat);
         }
 
@@ -69,4 +62,34 @@ pub fn is_rtcp(buf: &[u8]) -> bool {
     }
 
     true
+}
+
+#[allow(dead_code)]
+pub struct RtpHeader {
+    version: u8,
+    padding: bool,
+    extension: bool,
+    csrc_count: u8,
+    marker: bool,
+    payload: u8,
+}
+
+impl RtpHeader {
+    fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
+        let mut reader = BitReader::new(buf);
+        let version = reader.read_u8(2)?;
+
+        if version != 2 {
+            return Err(ErrorParse::UnsupportedFormat);
+        }
+
+        Ok(RtpHeader {
+            version,
+            padding: reader.read_bool()?,
+            extension: reader.read_bool()?,
+            csrc_count: reader.read_u8(4)?,
+            marker: reader.read_bool()?,
+            payload: reader.read_u8(7)?,
+        })
+    }
 }
