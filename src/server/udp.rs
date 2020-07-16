@@ -89,11 +89,17 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                     let dtls = Arc::clone(&self.dtls);
                     ctx.spawn(
                         async move {
-                            if let Err(e) = udp_send.send(WebRtcRequest::Stun(req, addr)).await {
+                            let resp = futures::future::join(
+                                udp_send.send(WebRtcRequest::Stun(req, addr)),
+                                dtls.send(GroupId(group_id, addr)),
+                            )
+                            .await;
+
+                            if let Err(e) = resp.0 {
                                 warn!("udp recv to udp send: {:#?}", e)
                             }
 
-                            if let Err(e) = dtls.send(GroupId(group_id, addr)).await {
+                            if let Err(e) = resp.1 {
                                 warn!("udp recv to dtls: {:#?}", e)
                             }
                         }
