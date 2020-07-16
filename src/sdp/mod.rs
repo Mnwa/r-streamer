@@ -32,7 +32,7 @@ use webrtc_sdp::{
     parse_sdp, SdpConnection, SdpSession, SdpTiming,
 };
 
-pub async fn generate_response(
+pub async fn generate_streamer_response(
     sdp: &str,
     recv: Arc<Addr<UdpRecv>>,
     group_id: usize,
@@ -54,13 +54,8 @@ pub async fn generate_response(
     let sessions: Vec<Request<UdpRecv, SessionMessage>> = req
         .media
         .iter()
-        .filter_map(|m| {
-            Some(
-                m.get_attribute(IceUfrag)?
-                    .to_string()
-                    .replace("ice-ufrag:", ""),
-            )
-        })
+        .filter_map(|m| m.get_attribute(IceUfrag))
+        .map(|m| m.to_string().replace("ice-ufrag:", ""))
         .map(|client_user| Session::new(server_user.clone(), client_user))
         .map(|session| SessionMessage(session, group_id))
         .map(|session_message| recv.send(session_message))
@@ -106,6 +101,10 @@ pub async fn generate_response(
             Ok(m)
         })
         .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;
+
+    /*
+    отправить в сессион стор медиа стримера, чтобы потом возвращать его клиентам
+    */
 
     let mut res = SdpSession::new(version, origin, session);
     res.add_attribute(MsidSemantic(SdpAttributeMsidSemantic {

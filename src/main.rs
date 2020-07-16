@@ -6,7 +6,7 @@ mod server;
 mod stun;
 
 use crate::{
-    sdp::generate_response,
+    sdp::generate_streamer_response,
     server::udp::{create_udp, UdpRecv},
 };
 use actix::Addr;
@@ -59,7 +59,7 @@ async fn parse_sdp(
     let group_id = path_info.0;
     let body = String::from_utf8(body.to_vec()).map_err(|_| HttpResponse::BadRequest().finish())?;
 
-    let sdp = generate_response(&body, recv.into_inner(), group_id)
+    let sdp = generate_streamer_response(&body, recv.into_inner(), group_id)
         .await
         .map_err(|e| HttpResponse::BadRequest().body(e.to_string()))?;
 
