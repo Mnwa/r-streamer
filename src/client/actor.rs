@@ -2,7 +2,7 @@ use crate::{
     client::{
         clients::{ClientState, ClientsRefStorage, ClientsStorage},
         dtls::{extract_dtls, push_dtls},
-        group::{GroupId, GroupsAddrStorage, GroupsStorage},
+        group::{Group, GroupId},
     },
     dtls::{
         connector::connect,
@@ -19,8 +19,7 @@ use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
     client_storage: ClientsRefStorage,
-    group_storage: GroupsStorage,
-    group_addr_storage: GroupsAddrStorage,
+    groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Arc<Addr<UdpSend>>,
 }
@@ -31,8 +30,7 @@ impl ClientActor {
             ssl_acceptor,
             udp_send,
             client_storage: ClientsRefStorage::new(),
-            group_storage: GroupsStorage::new(),
-            group_addr_storage: GroupsAddrStorage::new(),
+            groups: Group::default(),
         })
     }
 }
@@ -109,24 +107,16 @@ impl Handler<WebRtcRequest> for ClientActor {
             WebRtcRequest::Rtc(message, addr) => {
                 let udp_send = Arc::clone(&self.udp_send);
                 let client = self.client_storage.entry(addr).or_default().get_client();
-                let addresses = match self.group_storage.get(&addr) {
-                    Some(group_id) => match self.group_addr_storage.get(group_id) {
-                        Some(addresses) => Some(
-                            addresses
-                                .clone()
-                                .into_iter()
-                                .filter(|g_addr| *g_addr != addr)
-                                .filter_map(|g_addr| {
-                                    self.client_storage
-                                        .get(&g_addr)
-                                        .map(|client_ref| (g_addr, client_ref.get_client()))
-                                })
-                                .collect::<ClientsStorage>(),
-                        ),
-                        None => None,
-                    },
-                    None => None,
-                };
+                let addresses = self.groups.get_addressess(addr).map(|addresses| {
+                    addresses
+                        .into_iter()
+                        .filter_map(|g_addr| {
+                            self.client_storage
+                                .get(&g_addr)
+                                .map(|client_ref| (g_addr, client_ref.get_client()))
+                        })
+                        .collect::<ClientsStorage>()
+                });
 
                 ctx.spawn(
                     async move {
@@ -235,8 +225,13 @@ impl Handler<DeleteMessage> for ClientActor {
     ) -> Self::Result {
         self.client_storage
             .remove(&addr)
-            .and_then(|_| self.group_storage.remove(&addr))
-            .and_then(|group_id| self.group_addr_storage.remove(&group_id))
+            .and_then(|_| {
+                if self.groups.remove_client(addr) {
+                    Some(())
+                } else {
+                    None
+                }
+            })
             .is_some()
     }
 }
@@ -250,9 +245,7 @@ impl Handler<GroupId> for ClientActor {
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
         if self.client_storage.contains_key(&addr) {
-            let group_addr_storage = self.group_addr_storage.entry(group_id).or_default();
-            group_addr_storage.push(addr);
-            self.group_storage.insert(addr, group_id);
+            self.groups.insert_client(group_id, addr)
         }
     }
 }
