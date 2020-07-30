@@ -22,7 +22,7 @@ pub fn rtp_processor(
         let rtp_header = RtpHeader::from_buf(&message)?;
 
         if rtp_header.payload == 111 {
-            return Err(UnsupportedFormat);
+            //return Err(UnsupportedFormat);
         }
 
         return Ok(message);

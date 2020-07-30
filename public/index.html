@@ -79,11 +79,11 @@
     const localVideo = document.getElementById('localVideo');
     const remoteVideo = document.getElementById('remoteVideo');
 
-    localVideo.addEventListener('loadedmetadata', function() {
+    localVideo.addEventListener('loadedmetadata', function () {
         console.log(`Local video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
     });
 
-    remoteVideo.addEventListener('loadedmetadata', function() {
+    remoteVideo.addEventListener('loadedmetadata', function () {
         console.log(`Remote video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
     });
 
@@ -114,7 +114,35 @@
         console.log('Requesting local stream');
         startButton.disabled = true;
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+            const stream = await navigator.mediaDevices.getUserMedia({
+                "video": {
+                    "width": 480,
+                    "height": 360,
+                    "advanced": [
+                        {
+                            "width": 480
+                        },
+                        {
+                            "width": {
+                                "min": 200
+                            }
+                        },
+                        {
+                            "width": {
+                                "max": 480
+                            }
+                        }
+                    ]
+                },
+                "audio": {
+                    "autoGainControl": false,
+                    "channelCount": 2,
+                    "echoCancellation": false,
+                    "noiseSuppression": false,
+                    "sampleRate": 48000,
+                    "sampleSize": 24
+                }
+            });
             console.log('Received local stream');
             localVideo.srcObject = stream;
             localStream = stream;
@@ -133,9 +161,13 @@
     async function receive() {
         const configuration = {
             ...getSelectedSdpSemantics(),
-            iceServers: [{
-                urls: ["stun:stun.l.google.com:19302"]
-            }],
+            iceServers: [{"urls": "stun:144.76.219.168:3478"},
+                {
+                    "urls": "turn:144.76.219.168:3478",
+                    "credential": "kurento-password",
+                    "username": "kurento-user"
+                }
+            ],
         };
 
         pc2 = new RTCPeerConnection(configuration);
@@ -183,9 +215,13 @@
         }
         const configuration = {
             ...getSelectedSdpSemantics(),
-            iceServers: [{
-                urls: ["stun:stun.l.google.com:19302"]
-            }],
+            iceServers: [{"urls": "stun:144.76.219.168:3478"},
+                {
+                    "urls": "turn:144.76.219.168:3478",
+                    "credential": "kurento-password",
+                    "username": "kurento-user"
+                }
+            ],
         };
         console.log('RTCPeerConnection configuration:', configuration);
         pc1 = new RTCPeerConnection(configuration);
@@ -278,7 +314,7 @@
     }
 
     async function onIceCandidate(pc, event) {
-        if(!event.candidate || !pc.remoteDescription || !pc.remoteDescription.type) {
+        if (!event.candidate || !pc.remoteDescription || !pc.remoteDescription.type) {
             return;
         }
         try {
@@ -320,6 +356,9 @@
 <style>
     .box {
         margin: 20px auto;
+    }
+    video {
+        transform: rotateY(180deg);
     }
 </style>
 </body>
