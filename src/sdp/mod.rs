@@ -106,6 +106,8 @@ pub async fn generate_streamer_response(
     отправить в сессион стор медиа стримера, чтобы потом возвращать его клиентам
     */
 
+    origin.username = String::from("-");
+
     let mut res = SdpSession::new(version, origin, session);
     res.add_attribute(MsidSemantic(SdpAttributeMsidSemantic {
         semantic: String::from("WMS"),
@@ -158,7 +160,6 @@ fn set_attributes(
         fingerprint,
     }))?;
     m.set_attribute(Setup(Passive))?;
-    m.set_attribute(EndOfCandidates)?;
     m.set_attribute(Rtcp(SdpAttributeRtcp {
         port: addr.port(),
         unicast_addr: Some(ExplicitlyTypedAddress::from(addr.ip())),
@@ -179,6 +180,8 @@ fn set_attributes(
         component: 1,
         unknown_extensions: vec![],
     }))?;
+
+    m.set_attribute(EndOfCandidates)?;
 
     Ok(())
 }
