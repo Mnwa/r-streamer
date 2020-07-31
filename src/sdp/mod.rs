@@ -3,7 +3,7 @@ use crate::{
     server::udp::{ServerDataRequest, UdpRecv},
 };
 use actix::prelude::*;
-use futures::{future::ready, stream::iter, StreamExt};
+use futures::{future::ready, stream::iter, StreamExt, TryStreamExt};
 use rand::{prelude::ThreadRng, Rng};
 use std::{
     error::Error,
@@ -59,10 +59,9 @@ pub async fn generate_streamer_response(
         .map(|client_user| Session::new(server_user.clone(), client_user))
         .map(|session| SessionMessage(session, group_id))
         .then(|session_message| recv.send(session_message))
-        .collect::<Vec<_>>()
+        .try_collect::<Vec<_>>()
         .await
-        .into_iter()
-        .collect::<Result<Vec<bool>, MailboxError>>();
+        .expect("session sending error");
 
     let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();

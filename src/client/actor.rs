@@ -12,7 +12,7 @@ use crate::{
     server::udp::{UdpSend, WebRtcRequest},
 };
 use actix::prelude::*;
-use futures::stream::{iter, StreamExt};
+use futures::stream::{iter, StreamExt, TryStreamExt};
 use log::warn;
 use openssl::ssl::SslAcceptor;
 use std::{net::SocketAddr, sync::Arc};
@@ -172,10 +172,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                             udp_send.send(WebRtcRequest::Rtc(message, addr)).await
                                         }
                                     })
-                                    .collect::<Vec<_>>()
-                                    .await
-                                    .into_iter()
-                                    .collect::<Result<Vec<()>, MailboxError>>();
+                                    .try_collect::<Vec<_>>()
+                                    .await;
 
                                 if let Err(e) = is_sent {
                                     warn!("udp send err: {}", e)
