@@ -3,6 +3,7 @@ use crate::{
     server::udp::{ServerDataRequest, UdpRecv},
 };
 use actix::prelude::*;
+use futures::{future::ready, stream::iter, StreamExt};
 use rand::{prelude::ThreadRng, Rng};
 use std::{
     error::Error,
@@ -52,17 +53,13 @@ pub async fn generate_streamer_response(
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
-    let sessions: Vec<Request<UdpRecv, SessionMessage>> = req
-        .media
-        .iter()
-        .filter_map(|m| m.get_attribute(IceUfrag))
+    let _inserted = iter(&req.media)
+        .filter_map(|m| ready(m.get_attribute(IceUfrag)))
         .map(|m| m.to_string().replace("ice-ufrag:", ""))
         .map(|client_user| Session::new(server_user.clone(), client_user))
         .map(|session| SessionMessage(session, group_id))
-        .map(|session_message| recv.send(session_message))
-        .collect();
-
-    let _inserted = futures::future::join_all(sessions)
+        .then(|session_message| recv.send(session_message))
+        .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<bool>, MailboxError>>();
