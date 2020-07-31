@@ -36,6 +36,7 @@ pub async fn generate_streamer_response(
     sdp: &str,
     recv: Arc<Addr<UdpRecv>>,
     group_id: usize,
+    sdp_addr: SocketAddr,
 ) -> Result<SdpSession, SdpResponseGeneratorError> {
     let req = parse_sdp(sdp, true)?;
 
@@ -68,7 +69,7 @@ pub async fn generate_streamer_response(
 
     let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();
-    origin.unicast_addr = ExplicitlyTypedAddress::from(server_data.addr.ip());
+    origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
 
     let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
         Group(SdpAttributeGroup {
@@ -86,7 +87,7 @@ pub async fn generate_streamer_response(
         .media
         .into_iter()
         .map(|mut m| {
-            m.set_port(server_data.addr.port() as u32);
+            m.set_port(sdp_addr.port() as u32);
 
             remove_useless_attributes(&mut m);
             set_attributes(
@@ -94,10 +95,10 @@ pub async fn generate_streamer_response(
                 server_user.clone(),
                 server_passwd.clone(),
                 server_data.crypto.digest.clone(),
-                server_data.addr,
+                sdp_addr,
                 &mut rng,
             )?;
-            replace_connection(m.get_connection(), server_data.addr);
+            replace_connection(m.get_connection(), sdp_addr);
             Ok(m)
         })
         .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;

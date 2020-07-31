@@ -255,7 +255,7 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Arc<Addr<UdpSend>>)
     let server = UdpSocket::bind(addr).await.expect("udp must be up");
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
-    let data = Arc::new(ServerData { meta, crypto, addr });
+    let data = Arc::new(ServerData { meta, crypto });
 
     let (recv, send) = server.split();
     let udp_send = Arc::new(UdpSend::new(send, Arc::clone(&data)));
@@ -311,7 +311,6 @@ impl Message for WebRtcRequest {
 pub struct ServerData {
     pub crypto: Crypto,
     pub meta: ServerMeta,
-    pub addr: SocketAddr,
 }
 
 #[derive(Message)]
