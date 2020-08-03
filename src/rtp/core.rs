@@ -1,4 +1,4 @@
-use crate::rtp::srtp::ErrorParse::{UnsupportedFormat, UnsupportedRequest};
+use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
 use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
