@@ -9,8 +9,8 @@ pub type MediaAddrStorage = HashMap<SocketAddr, MediaList>;
 
 pub type MediaList = Arc<Vec<SdpMedia>>;
 
-pub struct MediaUserMessage(pub String, pub Vec<SdpMedia>);
-pub struct MediaAddrMessage(pub SocketAddr, pub Vec<SdpMedia>);
+pub struct MediaUserMessage(pub String, pub MediaList);
+pub struct MediaAddrMessage(pub SocketAddr, pub MediaList);
 
 impl Message for MediaUserMessage {
     type Result = ();

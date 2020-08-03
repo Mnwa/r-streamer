@@ -1,4 +1,4 @@
-use crate::sdp::media::{MediaUserMessage, MediaUserStorage};
+use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
         actor::ClientActor,
@@ -90,6 +90,10 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                     let group_id = *group_id;
                     let udp_send = Arc::clone(&self.send);
                     let dtls = Arc::clone(&self.dtls);
+                    let media = self
+                        .media_sessions
+                        .get(&req.remote_user)
+                        .map(MediaList::clone);
                     ctx.spawn(
                         async move {
                             let resp = futures::future::join(
@@ -97,6 +101,12 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                                 dtls.send(GroupId(group_id, addr)),
                             )
                             .await;
+
+                            if let Some(media) = media {
+                                if let Err(e) = dtls.send(MediaAddrMessage(addr, media)).await {
+                                    warn!("udp recv to dtls: {:#?}", e)
+                                }
+                            }
 
                             if let Err(e) = resp.0 {
                                 warn!("udp recv to udp send: {:#?}", e)
@@ -176,7 +186,7 @@ impl Handler<MediaUserMessage> for UdpRecv {
         MediaUserMessage(user_name, media): MediaUserMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.media_sessions.insert(user_name, Arc::new(media));
+        self.media_sessions.insert(user_name, media);
     }
 }
 

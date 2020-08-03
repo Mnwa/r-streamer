@@ -1,3 +1,4 @@
+use crate::sdp::media::{MediaAddrMessage, MediaAddrStorage};
 use crate::{
     client::{
         clients::{ClientState, ClientsRefStorage, ClientsStorage},
@@ -23,6 +24,7 @@ pub struct ClientActor {
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Arc<Addr<UdpSend>>,
+    media_sessions: MediaAddrStorage,
 }
 
 impl ClientActor {
@@ -32,6 +34,7 @@ impl ClientActor {
             udp_send,
             client_storage: ClientsRefStorage::new(),
             groups: Group::default(),
+            media_sessions: MediaAddrStorage::new(),
         })
     }
 }
@@ -243,6 +246,18 @@ impl Handler<GroupId> for ClientActor {
         if self.client_storage.contains_key(&addr) {
             self.groups.insert_client(group_id, addr)
         }
+    }
+}
+
+impl Handler<MediaAddrMessage> for ClientActor {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        MediaAddrMessage(addr, media): MediaAddrMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        self.media_sessions.insert(addr, media);
     }
 }
 
