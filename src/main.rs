@@ -44,10 +44,20 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
+#[cfg(not(build = "release"))]
 #[get("/")]
 async fn index(req: HttpRequest) -> Result<NamedFile> {
     info!("serving example index HTML to {:?}", req.peer_addr());
     Ok(NamedFile::open("public/index.html")?)
+}
+
+#[cfg(build = "release")]
+#[get("/")]
+async fn index(req: HttpRequest) -> HttpResponse {
+    info!("serving example index HTML to {:?}", req.peer_addr());
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(include_str!("../public/index.html"))
 }
 
 #[post("/parse_sdp/{group_id}/")]
