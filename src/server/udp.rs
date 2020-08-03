@@ -1,3 +1,4 @@
+use crate::sdp::media::{MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
         actor::ClientActor,
@@ -25,6 +26,7 @@ pub struct UdpRecv {
     dtls: Arc<Addr<ClientActor>>,
     data: Arc<ServerData>,
     sessions: SessionsStorage,
+    media_sessions: MediaUserStorage,
 }
 
 impl Actor for UdpRecv {
@@ -63,6 +65,7 @@ impl UdpRecv {
                 dtls,
                 data,
                 sessions: HashMap::new(),
+                media_sessions: HashMap::new(),
             }
         })
     }
@@ -162,6 +165,18 @@ impl Handler<SessionMessage> for UdpRecv {
     ) -> Self::Result {
         self.sessions.insert(session, (id, SystemTime::now()));
         true
+    }
+}
+
+impl Handler<MediaUserMessage> for UdpRecv {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        MediaUserMessage(user_name, media): MediaUserMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        self.media_sessions.insert(user_name, Arc::new(media));
     }
 }
 

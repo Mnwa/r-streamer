@@ -15,6 +15,10 @@ impl Session {
             client_user,
         }
     }
+
+    pub fn get_client(&self) -> String {
+        self.client_user.clone()
+    }
 }
 
 pub struct SessionMessage(pub Session, pub usize);

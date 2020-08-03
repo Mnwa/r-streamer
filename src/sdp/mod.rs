@@ -1,3 +1,6 @@
+pub mod media;
+
+use crate::sdp::media::MediaUserMessage;
 use crate::{
     client::sessions::{Session, SessionMessage},
     server::udp::{ServerDataRequest, UdpRecv},
@@ -57,8 +60,16 @@ pub async fn generate_streamer_response(
         .filter_map(|m| ready(m.get_attribute(IceUfrag)))
         .map(|m| m.to_string().replace("ice-ufrag:", ""))
         .map(|client_user| Session::new(server_user.clone(), client_user))
-        .map(|session| SessionMessage(session, group_id))
-        .then(|session_message| recv.send(session_message))
+        .map(|session| {
+            (
+                MediaUserMessage(session.get_client(), req.media.clone()),
+                SessionMessage(session, group_id),
+            )
+        })
+        .then(|(media_message, session_message)| {
+            futures::future::join(recv.send(session_message), recv.send(media_message))
+        })
+        .map(|res| res.0.and_then(|v| Ok((v, res.1?))))
         .try_collect::<Vec<_>>()
         .await
         .expect("session sending error");
