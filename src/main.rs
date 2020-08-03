@@ -10,7 +10,6 @@ use crate::{
     server::udp::{create_udp, UdpRecv},
 };
 use actix::Addr;
-use actix_files::NamedFile;
 use actix_web::{
     get, post,
     web::{Bytes, Data, Path},
@@ -18,6 +17,9 @@ use actix_web::{
 };
 use log::info;
 use std::net::SocketAddr;
+
+#[cfg(debug_assertions)]
+use actix_files::NamedFile;
 
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
@@ -44,17 +46,17 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-#[cfg(not(build = "release"))]
+#[cfg(debug_assertions)]
 #[get("/")]
 async fn index(req: HttpRequest) -> Result<NamedFile> {
-    info!("serving example index HTML to {:?}", req.peer_addr());
+    info!("dev: serving example index HTML to {:?}", req.peer_addr());
     Ok(NamedFile::open("public/index.html")?)
 }
 
-#[cfg(build = "release")]
+#[cfg(not(debug_assertions))]
 #[get("/")]
 async fn index(req: HttpRequest) -> HttpResponse {
-    info!("serving example index HTML to {:?}", req.peer_addr());
+    info!("prod: serving example index HTML to {:?}", req.peer_addr());
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(include_str!("../public/index.html"))
