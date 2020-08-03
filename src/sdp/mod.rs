@@ -3,6 +3,7 @@ use crate::{
     server::udp::{ServerDataRequest, UdpRecv},
 };
 use actix::prelude::*;
+use futures::{future::ready, stream::iter, StreamExt, TryStreamExt};
 use rand::{prelude::ThreadRng, Rng};
 use std::{
     error::Error,
@@ -36,6 +37,7 @@ pub async fn generate_streamer_response(
     sdp: &str,
     recv: Arc<Addr<UdpRecv>>,
     group_id: usize,
+    sdp_addr: SocketAddr,
 ) -> Result<SdpSession, SdpResponseGeneratorError> {
     let req = parse_sdp(sdp, true)?;
 
@@ -51,24 +53,19 @@ pub async fn generate_streamer_response(
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
-    let sessions: Vec<Request<UdpRecv, SessionMessage>> = req
-        .media
-        .iter()
-        .filter_map(|m| m.get_attribute(IceUfrag))
+    let _inserted = iter(&req.media)
+        .filter_map(|m| ready(m.get_attribute(IceUfrag)))
         .map(|m| m.to_string().replace("ice-ufrag:", ""))
         .map(|client_user| Session::new(server_user.clone(), client_user))
         .map(|session| SessionMessage(session, group_id))
-        .map(|session_message| recv.send(session_message))
-        .collect();
-
-    let _inserted = futures::future::join_all(sessions)
+        .then(|session_message| recv.send(session_message))
+        .try_collect::<Vec<_>>()
         .await
-        .into_iter()
-        .collect::<Result<Vec<bool>, MailboxError>>();
+        .expect("session sending error");
 
     let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();
-    origin.unicast_addr = ExplicitlyTypedAddress::from(server_data.addr.ip());
+    origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
 
     let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
         Group(SdpAttributeGroup {
@@ -86,7 +83,7 @@ pub async fn generate_streamer_response(
         .media
         .into_iter()
         .map(|mut m| {
-            m.set_port(server_data.addr.port() as u32);
+            m.set_port(sdp_addr.port() as u32);
 
             remove_useless_attributes(&mut m);
             set_attributes(
@@ -94,10 +91,10 @@ pub async fn generate_streamer_response(
                 server_user.clone(),
                 server_passwd.clone(),
                 server_data.crypto.digest.clone(),
-                server_data.addr,
+                sdp_addr,
                 &mut rng,
             )?;
-            replace_connection(m.get_connection(), server_data.addr);
+            replace_connection(m.get_connection(), sdp_addr);
             Ok(m)
         })
         .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;

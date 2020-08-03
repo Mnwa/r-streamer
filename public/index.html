@@ -113,8 +113,7 @@
     async function start() {
         console.log('Requesting local stream');
         startButton.disabled = true;
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
                 "video": {
                     "width": 480,
                     "height": 360,
@@ -143,13 +142,10 @@
                     "sampleSize": 24
                 }
             });
-            console.log('Received local stream');
-            localVideo.srcObject = stream;
-            localStream = stream;
-            callButton.disabled = false;
-        } catch (e) {
-            alert(`getUserMedia() error: ${e.name}`);
-        }
+        console.log('Received local stream');
+        localVideo.srcObject = stream;
+        localStream = stream;
+        callButton.disabled = false;
     }
 
     function getSelectedSdpSemantics() {
