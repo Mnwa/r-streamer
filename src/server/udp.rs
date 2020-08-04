@@ -161,6 +161,7 @@ impl StreamHandler<ClearData> for UdpRecv {
 
         sessions_to_remove.into_iter().for_each(|s| {
             self.sessions.remove(&s);
+            self.media_sessions.remove(&s.get_client());
         });
     }
 }

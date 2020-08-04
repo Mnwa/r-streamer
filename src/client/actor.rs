@@ -231,6 +231,7 @@ impl Handler<DeleteMessage> for ClientActor {
                     None
                 }
             })
+            .and_then(|_| self.media_sessions.remove(&addr))
             .is_some()
     }
 }
