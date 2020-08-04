@@ -146,6 +146,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     .ok()
                             };
 
+                            drop(client_unlocked);
+
                             let addresses_processed = addresses
                                 .filter(|addresses| !addresses.is_empty())
                                 .and_then(|addresses| Some((addresses, message_processed?)));
@@ -172,6 +174,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                     }
                                                 }
                                             }
+                                            drop(client);
                                             udp_send.send(WebRtcRequest::Rtc(message, addr)).await
                                         }
                                     })
