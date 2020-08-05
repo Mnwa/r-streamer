@@ -1,4 +1,4 @@
-use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
+use crate::rtp::srtp::ErrorParse::{UnsupportedFormat, UnsupportedRequest};
 use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
@@ -22,7 +22,7 @@ pub fn rtp_processor(
         let rtp_header = RtpHeader::from_buf(&message)?;
 
         if rtp_header.payload == 111 {
-            //return Err(UnsupportedFormat);
+            return Err(UnsupportedFormat);
         }
 
         return Ok(message);
@@ -70,18 +70,18 @@ pub struct RtpHeader {
     padding: bool,
     extension: bool,
     csrc_count: u8,
-    marker: bool,
-    payload: u8,
+    pub marker: bool,
+    pub payload: u8,
 }
 
 impl RtpHeader {
-    fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
+    pub fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
         let mut reader = BitReader::new(buf);
         let version = reader.read_u8(2)?;
 
-        if version != 2 {
-            return Err(ErrorParse::UnsupportedFormat);
-        }
+        // if version != 2 {
+        //     return Err(ErrorParse::UnsupportedFormat);
+        // }
 
         Ok(RtpHeader {
             version,

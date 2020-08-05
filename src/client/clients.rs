@@ -1,3 +1,4 @@
+use crate::sdp::media::MediaList;
 use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
     dtls::message::DtlsMessage,
@@ -81,19 +82,28 @@ impl From<ErrorParse> for ClientError {
 }
 
 pub type ClientsRefStorage = HashMap<SocketAddr, ClientRef>;
-pub type ClientsStorage = HashMap<SocketAddr, Arc<Mutex<Client>>>;
 
-pub struct ClientRef(Arc<Mutex<Client>>, ClientSslPacketsChannels);
+pub struct ClientRef(
+    Arc<Mutex<Client>>,
+    ClientSslPacketsChannels,
+    Option<Arc<MediaList>>,
+);
 impl ClientRef {
     pub fn get_client(&self) -> Arc<Mutex<Client>> {
         Arc::clone(&self.0)
+    }
+    pub fn get_media(&self) -> Option<Arc<MediaList>> {
+        self.2.as_ref().map(|m| Arc::clone(m))
+    }
+    pub fn set_media(&mut self, media: Arc<MediaList>) {
+        self.2 = Some(media)
     }
 }
 
 impl From<Client> for ClientRef {
     fn from(c: Client) -> Self {
         let channels = c.channels.clone();
-        ClientRef(Arc::new(Mutex::new(c)), channels)
+        ClientRef(Arc::new(Mutex::new(c)), channels, None)
     }
 }
 

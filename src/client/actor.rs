@@ -1,7 +1,8 @@
-use crate::sdp::media::{MediaAddrMessage, MediaAddrStorage};
+use crate::rtp::core::RtpHeader;
+use crate::sdp::media::MediaAddrMessage;
 use crate::{
     client::{
-        clients::{ClientState, ClientsRefStorage, ClientsStorage},
+        clients::{ClientState, ClientsRefStorage},
         dtls::{extract_dtls, push_dtls},
         group::{Group, GroupId},
     },
@@ -16,6 +17,7 @@ use actix::prelude::*;
 use futures::stream::{iter, StreamExt, TryStreamExt};
 use log::warn;
 use openssl::ssl::SslAcceptor;
+use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
 
@@ -24,7 +26,6 @@ pub struct ClientActor {
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Arc<Addr<UdpSend>>,
-    media_sessions: MediaAddrStorage,
 }
 
 impl ClientActor {
@@ -34,7 +35,6 @@ impl ClientActor {
             udp_send,
             client_storage: ClientsRefStorage::new(),
             groups: Group::default(),
-            media_sessions: MediaAddrStorage::new(),
         })
     }
 }
@@ -110,23 +110,56 @@ impl Handler<WebRtcRequest> for ClientActor {
             }
             WebRtcRequest::Rtc(message, addr) => {
                 let udp_send = Arc::clone(&self.udp_send);
-                let client = self.client_storage.entry(addr).or_default().get_client();
-                let addresses = self.groups.get_addressess(addr).map(|addresses| {
-                    addresses
-                        .into_iter()
-                        .filter_map(|g_addr| {
-                            self.client_storage
-                                .get(&g_addr)
-                                .map(|client_ref| (g_addr, client_ref.get_client()))
-                        })
-                        .collect::<ClientsStorage>()
-                });
+                let client_ref = self.client_storage.entry(addr).or_default();
+                let client = client_ref.get_client();
+
+                let is_rtcp = is_rtcp(&message);
+
+                let addresses = if is_rtcp {
+                    self.groups.get_addressess(addr).map(|addresses| {
+                        addresses
+                            .into_iter()
+                            .filter_map(|g_addr| {
+                                self.client_storage
+                                    .get(&g_addr)
+                                    .map(|client_ref| client_ref.get_client())
+                                    .map(|client| (g_addr, (client, 0)))
+                            })
+                            .collect::<HashMap<_, _>>()
+                    })
+                } else {
+                    let codec = client_ref
+                        .get_media()
+                        .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
+                        .and_then(|(m, r)| Some((r.marker, m.get_name(&r.payload).cloned()?)));
+
+                    self.groups.get_addressess(addr).map(|addresses| {
+                        addresses
+                            .into_iter()
+                            .filter_map(|g_addr| {
+                                self.client_storage
+                                    .get(&g_addr)
+                                    .and_then(|client_ref| {
+                                        Some((client_ref.get_media()?, client_ref.get_client()))
+                                    })
+                                    .and_then(|(media, client)| {
+                                        let (marker, payload) = codec.as_ref()?;
+                                        let new_payload = media.get_id(payload).copied()?;
+                                        Some((
+                                            g_addr,
+                                            (client, calculate_payload(*marker, new_payload)),
+                                        ))
+                                    })
+                            })
+                            .collect::<HashMap<_, _>>()
+                    })
+                };
 
                 ctx.spawn(
                     async move {
                         let mut client_unlocked = client.lock().await;
                         if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
-                            let message_processed = if is_rtcp(&message) {
+                            let message_processed = if is_rtcp {
                                 rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
                                     .map_err(|e| {
                                         if !e.should_ignored() {
@@ -154,7 +187,7 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                             if let Some((addresses, message)) = addresses_processed {
                                 let is_sent = iter(addresses)
-                                    .then(|(addr, client)| {
+                                    .then(|(addr, (client, payload))| {
                                         let mut message = message.clone();
                                         let udp_send = Arc::clone(&udp_send);
                                         async move {
@@ -162,7 +195,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                             if let ClientState::Connected(_, srtp) =
                                                 &mut client.state
                                             {
-                                                if is_rtcp(&message) {
+                                                if is_rtcp {
                                                     match srtp.protect_rtcp(&message) {
                                                         Ok(m) => message = m,
                                                         Err(e) => warn!("protect rtcp err: {}", e),
@@ -172,6 +205,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                         Ok(m) => message = m,
                                                         Err(e) => warn!("protect rtp err: {}", e),
                                                     }
+
+                                                    message[1] = payload;
                                                 }
                                             }
                                             drop(client);
@@ -234,7 +269,6 @@ impl Handler<DeleteMessage> for ClientActor {
                     None
                 }
             })
-            .and_then(|_| self.media_sessions.remove(&addr))
             .is_some()
     }
 }
@@ -261,7 +295,9 @@ impl Handler<MediaAddrMessage> for ClientActor {
         MediaAddrMessage(addr, media): MediaAddrMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.media_sessions.insert(addr, media);
+        if let Some(c) = self.client_storage.get_mut(&addr) {
+            c.set_media(media)
+        }
     }
 }
 
@@ -269,4 +305,24 @@ struct DeleteMessage(SocketAddr);
 
 impl Message for DeleteMessage {
     type Result = bool;
+}
+
+#[inline]
+fn calculate_payload(marker: bool, payload: u8) -> u8 {
+    if !marker {
+        return payload;
+    }
+
+    let mut res = 0;
+
+    res = (res << 1 as u8) | 1;
+
+    for i in 9..16 {
+        let shift = 7 - (i % 8);
+        let bit = payload >> shift & 1;
+
+        res = (res << 1) | bit;
+    }
+
+    res
 }

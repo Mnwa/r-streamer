@@ -1,4 +1,4 @@
-use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
+use crate::sdp::media::{MediaAddrMessage, MediaListRef, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
         actor::ClientActor,
@@ -93,7 +93,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                     let media = self
                         .media_sessions
                         .get(&req.remote_user)
-                        .map(MediaList::clone);
+                        .map(MediaListRef::clone);
                     ctx.spawn(
                         async move {
                             let resp = futures::future::join(
