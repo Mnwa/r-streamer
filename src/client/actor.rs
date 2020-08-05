@@ -308,21 +308,6 @@ impl Message for DeleteMessage {
 }
 
 #[inline]
-fn calculate_payload(marker: bool, payload: u8) -> u8 {
-    if !marker {
-        return payload;
-    }
-
-    let mut res = 0;
-
-    res = (res << 1 as u8) | 1;
-
-    for i in 9..16 {
-        let shift = 7 - (i % 8);
-        let bit = payload >> shift & 1;
-
-        res = (res << 1) | bit;
-    }
-
-    res
+const fn calculate_payload(marker: bool, payload: u8) -> u8 {
+    payload | ((marker as u8) << 7)
 }
