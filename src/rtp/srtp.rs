@@ -1,4 +1,3 @@
-use bitreader::BitReaderError;
 use bytes::BytesMut;
 use openssl::{error::ErrorStack, ssl::SslRef};
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
@@ -104,11 +103,5 @@ impl From<ErrorStack> for ErrorParse {
 impl From<ErrorSrtp> for ErrorParse {
     fn from(e: ErrorSrtp) -> Self {
         ErrorParse::Srtp(e)
-    }
-}
-
-impl From<BitReaderError> for ErrorParse {
-    fn from(_e: BitReaderError) -> Self {
-        ErrorParse::UnsupportedFormat
     }
 }

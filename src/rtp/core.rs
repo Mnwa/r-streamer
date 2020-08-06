@@ -1,9 +1,8 @@
-use crate::rtp::srtp::ErrorParse::{UnsupportedFormat, UnsupportedRequest};
+use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
 use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
 };
-use bitreader::BitReader;
 use rtp_rs::RtpReader;
 
 pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
@@ -19,11 +18,11 @@ pub fn rtp_processor(
             message = transport.unprotect(&message)?;
         }
 
-        let rtp_header = RtpHeader::from_buf(&message)?;
+        // let rtp_header = RtpHeader::from_buf(&message)?;
 
-        if rtp_header.payload == 111 {
-            return Err(UnsupportedFormat);
-        }
+        // if rtp_header.payload == 111 {
+        //     return Err(UnsupportedFormat);
+        // }
 
         return Ok(message);
     }
@@ -64,32 +63,26 @@ pub fn is_rtcp(buf: &[u8]) -> bool {
     true
 }
 
-#[allow(dead_code)]
 pub struct RtpHeader {
-    version: u8,
-    padding: bool,
-    extension: bool,
-    csrc_count: u8,
     pub marker: bool,
     pub payload: u8,
 }
 
 impl RtpHeader {
     pub fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
-        let mut reader = BitReader::new(buf);
-        let version = reader.read_u8(2)?;
+        if buf.len() <= 2 {
+            return Err(ErrorParse::UnsupportedFormat);
+        }
 
-        // if version != 2 {
-        //     return Err(ErrorParse::UnsupportedFormat);
-        // }
+        let version = buf[0] >> 6;
+
+        if version != 2 {
+            return Err(ErrorParse::UnsupportedFormat);
+        }
 
         Ok(RtpHeader {
-            version,
-            padding: reader.read_bool()?,
-            extension: reader.read_bool()?,
-            csrc_count: reader.read_u8(4)?,
-            marker: reader.read_bool()?,
-            payload: reader.read_u8(7)?,
+            marker: (buf[1] >> 7) == 1,
+            payload: buf[1] & 127, // 127 - 01111111 in binary format
         })
     }
 }
