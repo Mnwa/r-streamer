@@ -19,9 +19,9 @@ pub fn rtp_processor(
         }
 
         // let rtp_header = RtpHeader::from_buf(&message)?;
-
+        //
         // if rtp_header.payload == 111 {
-        //     return Err(UnsupportedFormat);
+        //     return Err(ErrorParse::UnsupportedFormat);
         // }
 
         return Ok(message);
@@ -82,7 +82,7 @@ impl RtpHeader {
 
         Ok(RtpHeader {
             marker: (buf[1] >> 7) == 1,
-            payload: buf[1] & 127, // 127 - 01111111 in binary format
+            payload: buf[1] & 0b01111111,
         })
     }
 }
