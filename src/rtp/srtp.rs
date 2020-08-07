@@ -1,6 +1,8 @@
+use actix::MailboxError;
 use bytes::BytesMut;
 use openssl::{error::ErrorStack, ssl::SslRef};
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
+use std::net::SocketAddr;
 use std::{
     error::Error,
     fmt::{Display, Formatter},
@@ -72,6 +74,8 @@ pub enum ErrorParse {
     UnsupportedProfile(String),
     UnsupportedRequest(String),
     UnsupportedFormat,
+    ClientNotReady(SocketAddr),
+    ActorDead(MailboxError),
 }
 
 impl ErrorParse {
@@ -88,6 +92,8 @@ impl Display for ErrorParse {
             ErrorParse::UnsupportedProfile(e) => write!(f, "Unsupported profile: {}", e),
             ErrorParse::UnsupportedRequest(e) => write!(f, "Unsupported request: {}", e),
             ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
+            ErrorParse::ClientNotReady(addr) => write!(f, "Client not ready: {}", addr),
+            ErrorParse::ActorDead(e) => write!(f, "Actor is dead: {:?}", e),
         }
     }
 }
@@ -103,5 +109,11 @@ impl From<ErrorStack> for ErrorParse {
 impl From<ErrorSrtp> for ErrorParse {
     fn from(e: ErrorSrtp) -> Self {
         ErrorParse::Srtp(e)
+    }
+}
+
+impl From<MailboxError> for ErrorParse {
+    fn from(e: MailboxError) -> Self {
+        ErrorParse::ActorDead(e)
     }
 }

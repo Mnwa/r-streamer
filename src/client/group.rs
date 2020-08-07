@@ -11,16 +11,9 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn get_addressess(&self, addr: SocketAddr) -> Option<Vec<SocketAddr>> {
+    pub fn get_addressess(&self, addr: SocketAddr) -> Option<&Vec<SocketAddr>> {
         let group_id = self.groups_storage.get(&addr)?;
-        let addresses = self.groups_addr_storage.get(group_id)?;
-        Some(
-            addresses
-                .iter()
-                .filter(|g_addr| **g_addr != addr)
-                .cloned()
-                .collect(),
-        )
+        self.groups_addr_storage.get(group_id)
     }
 
     pub fn insert_client(&mut self, group_id: usize, addr: SocketAddr) {

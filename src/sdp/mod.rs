@@ -14,8 +14,10 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+
 use webrtc_sdp::{
     address::{Address, ExplicitlyTypedAddress},
+    attribute_type::SdpAttribute::Rtpmap,
     attribute_type::{
         SdpAttribute,
         SdpAttribute::{
@@ -56,6 +58,18 @@ pub async fn generate_streamer_response(
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
+    let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
+        Group(SdpAttributeGroup {
+            semantics: Bundle,
+            tags: req
+                .media
+                .iter()
+                .enumerate()
+                .map(|(k, _v)| k.to_string())
+                .collect(),
+        })
+    });
+
     let _inserted = iter(&req.media)
         .filter_map(|m| ready(m.get_attribute(IceUfrag)))
         .map(|m| m.to_string().replace("ice-ufrag:", ""))
@@ -77,18 +91,6 @@ pub async fn generate_streamer_response(
     let mut rng = rand::thread_rng();
     origin.session_id = rng.gen();
     origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
-
-    let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
-        Group(SdpAttributeGroup {
-            semantics: Bundle,
-            tags: req
-                .media
-                .iter()
-                .enumerate()
-                .map(|(k, _v)| k.to_string())
-                .collect(),
-        })
-    });
 
     let media: Vec<SdpMedia> = req
         .media
@@ -160,6 +162,27 @@ fn set_attributes(
     addr: SocketAddr,
     rng: &mut ThreadRng,
 ) -> Result<(), SdpParserInternalError> {
+    let good_codecs: Vec<_> = m
+        .get_attributes()
+        .iter()
+        .filter_map(|attr| match attr {
+            Rtpmap(s) => {
+                if is_supported_format(&format!("{}/{}", s.codec_name, s.frequency)) {
+                    Some(s)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .cloned()
+        .collect();
+
+    m.remove_codecs();
+    good_codecs
+        .into_iter()
+        .try_for_each(|attr| m.add_codec(attr))?;
+
     m.set_attribute(SendrecvAttr)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
     m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
@@ -237,4 +260,19 @@ impl From<&str> for SdpResponseGeneratorError {
     fn from(e: &str) -> Self {
         SdpResponseGeneratorError::CustomError(e.into())
     }
+}
+
+#[inline]
+fn is_supported_format(format: &str) -> bool {
+    matches!(
+        format,
+        "PCMU/8000"
+            | "PCMA/8000"
+            | "G722/8000"
+            | "H264/90000"
+            | "telephone-event/8000"
+            | "opus/48000"
+            | "VP8/90000"
+            | "VP9/90000"
+    )
 }

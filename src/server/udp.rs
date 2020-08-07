@@ -11,6 +11,8 @@ use crate::{
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
 use actix::prelude::*;
+use futures::future::ready;
+use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
 use tokio::{
@@ -22,8 +24,8 @@ use tokio::{
 };
 
 pub struct UdpRecv {
-    send: Arc<Addr<UdpSend>>,
-    dtls: Arc<Addr<ClientActor>>,
+    send: Addr<UdpSend>,
+    dtls: Addr<ClientActor>,
     data: Arc<ServerData>,
     sessions: SessionsStorage,
     media_sessions: MediaUserStorage,
@@ -36,24 +38,21 @@ impl Actor for UdpRecv {
 impl UdpRecv {
     pub fn new(
         recv: RecvHalf,
-        send: Arc<Addr<UdpSend>>,
-        dtls: Arc<Addr<ClientActor>>,
+        send: Addr<UdpSend>,
+        dtls: Addr<ClientActor>,
         data: Arc<ServerData>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
-            let stream = futures::stream::unfold(recv, |mut server| async move {
-                let mut message_buf: Vec<u8> = vec![0; 0x10000];
-
-                match server.recv_from(&mut message_buf).await {
-                    Ok((n, addr_from)) => {
-                        message_buf.truncate(n);
-                        Some(((message_buf, addr_from), server))
-                    }
-                    Err(err) => {
-                        warn!("could not receive UDP message: {}", err);
-                        None
-                    }
-                }
+            let stream = futures::stream::unfold(recv, |mut server| {
+                ready(vec![0; 0x10000])
+                    .then(|mut message| async move {
+                        server.recv_from(&mut message).await.map(|(n, addr)| {
+                            message.truncate(n);
+                            ((message, addr), server)
+                        })
+                    })
+                    .inspect_err(|err| warn!("could not receive UDP message: {}", err))
+                    .map(|r| r.ok())
             })
             .map(WebRtcRequest::from);
 
@@ -88,58 +87,49 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                 if let Some((group_id, ttl)) = self.sessions.get_mut(&session) {
                     *ttl = SystemTime::now();
                     let group_id = *group_id;
-                    let udp_send = Arc::clone(&self.send);
-                    let dtls = Arc::clone(&self.dtls);
+
                     let media = self
                         .media_sessions
                         .get(&req.remote_user)
                         .map(MediaListRef::clone);
+
+                    if let Some(media) = media {
+                        ctx.spawn(
+                            self.dtls
+                                .send(MediaAddrMessage(addr, media))
+                                .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                                .map(|_e| ())
+                                .into_actor(self),
+                        );
+                    }
+
                     ctx.spawn(
-                        async move {
-                            let resp = futures::future::join(
-                                udp_send.send(WebRtcRequest::Stun(req, addr)),
-                                dtls.send(GroupId(group_id, addr)),
-                            )
-                            .await;
-
-                            if let Some(media) = media {
-                                if let Err(e) = dtls.send(MediaAddrMessage(addr, media)).await {
-                                    warn!("udp recv to dtls: {:#?}", e)
-                                }
-                            }
-
-                            if let Err(e) = resp.0 {
-                                warn!("udp recv to udp send: {:#?}", e)
-                            }
-
-                            if let Err(e) = resp.1 {
-                                warn!("udp recv to dtls: {:#?}", e)
-                            }
-                        }
+                        futures::future::try_join(
+                            self.send.send(WebRtcRequest::Stun(req, addr)),
+                            self.dtls.send(GroupId(group_id, addr)),
+                        )
+                        .inspect_err(|e| warn!("dtls or udp send err: {:?}", e))
+                        .map(|_e| ())
                         .into_actor(self),
                     );
                 }
             }
             WebRtcRequest::Dtls(message, addr) => {
-                let dtls = Arc::clone(&self.dtls);
                 ctx.spawn(
-                    async move {
-                        if let Err(e) = dtls.send(WebRtcRequest::Dtls(message, addr)).await {
-                            warn!("udp recv to dtls: {:#?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.dtls
+                        .send(WebRtcRequest::Dtls(message, addr))
+                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                        .map(|_e| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                let dtls = Arc::clone(&self.dtls);
                 ctx.spawn(
-                    async move {
-                        if let Err(e) = dtls.send(WebRtcRequest::Rtc(message, addr)).await {
-                            warn!("udp recv to dtls: {:#?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.dtls
+                        .send(WebRtcRequest::Rtc(message, addr))
+                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                        .map(|_e| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("unknown request"),
@@ -217,8 +207,6 @@ impl Handler<WebRtcRequest> for UdpSend {
     type Result = ();
 
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
-        let sender = Arc::clone(&self.send);
-
         match msg {
             WebRtcRequest::Stun(req, addr) => {
                 let mut message_buf: Vec<u8> = vec![0; 0x10000];
@@ -238,38 +226,47 @@ impl Handler<WebRtcRequest> for UdpSend {
                 };
 
                 message_buf.truncate(n);
+
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message_buf, &addr).await;
-                        if let Err(e) = result {
+                    self.send
+                        .clone()
+                        .lock_owned()
+                        .then(move |mut sender| async move {
+                            sender.send_to(&message_buf, &addr).await
+                        })
+                        .inspect_err(|e|  {
                             if e.kind() != std::io::ErrorKind::AddrNotAvailable {
-                                warn!("err {:?}", e)
+                                warn!("err stun: {:?}", e)
                             }
-                        }
-                    }
-                    .into_actor(self),
+                        })
+                        .map(|_e| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message, &addr).await;
-                        if let Err(e) = result {
-                            warn!("err dtls {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.send
+                        .clone()
+                        .lock_owned()
+                        .then(
+                            move |mut sender| async move { sender.send_to(&message, &addr).await },
+                        )
+                        .inspect_err(|e| warn!("err dtls: {:?}", e))
+                        .map(|_e| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message, &addr).await;
-                        if let Err(e) = result {
-                            warn!("err dtls {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.send
+                        .clone()
+                        .lock_owned()
+                        .then(
+                            move |mut sender| async move { sender.send_to(&message, &addr).await },
+                        )
+                        .inspect_err(|e| warn!("err rtc: {:?}", e))
+                        .map(|_e| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("unknown request"),
@@ -277,21 +274,18 @@ impl Handler<WebRtcRequest> for UdpSend {
     }
 }
 
-pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Arc<Addr<UdpSend>>) {
+pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
     let server = UdpSocket::bind(addr).await.expect("udp must be up");
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
     let data = Arc::new(ServerData { meta, crypto });
 
     let (recv, send) = server.split();
-    let udp_send = Arc::new(UdpSend::new(send, Arc::clone(&data)));
-    let dtls = Arc::new(ClientActor::new(
-        Arc::clone(&data.crypto.ssl_acceptor),
-        Arc::clone(&udp_send),
-    ));
-    let udp_recv = UdpRecv::new(recv, Arc::clone(&udp_send), dtls, data);
+    let udp_send = UdpSend::new(send, Arc::clone(&data));
+    let dtls = ClientActor::new(Arc::clone(&data.crypto.ssl_acceptor), udp_send.clone());
+    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data);
 
-    (udp_recv, Arc::clone(&udp_send))
+    (udp_recv, udp_send)
 }
 
 #[derive(Debug, Clone)]

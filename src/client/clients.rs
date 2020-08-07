@@ -4,7 +4,7 @@ use crate::{
     dtls::message::DtlsMessage,
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
-use futures::{channel::mpsc::SendError, lock::Mutex, prelude::*, stream::FusedStream};
+use futures::{channel::mpsc::SendError, prelude::*, stream::FusedStream};
 use std::{
     collections::HashMap,
     error::Error,
@@ -12,6 +12,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tokio::sync::Mutex;
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]

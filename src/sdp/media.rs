@@ -34,7 +34,7 @@ impl FromIterator<SdpAttribute> for MediaList {
         let mut list = MediaList::default();
         iter.into_iter()
             .filter_map(|attr| match attr {
-                Rtpmap(s) => Some((s.payload_type, s.codec_name)),
+                Rtpmap(s) => Some((s.payload_type, format!("{}/{}", s.codec_name, s.frequency))),
                 _ => None,
             })
             .for_each(|attr| list.insert(attr.0, attr.1));
