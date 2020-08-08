@@ -121,49 +121,55 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let is_rtcp = is_rtcp(&message);
 
                 let addresses = if is_rtcp {
-                    self.groups.get_addressess(addr).map(|addresses| {
-                        addresses
-                            .iter()
-                            .filter_map(|g_addr| {
-                                self.client_storage
-                                    .get(g_addr)
-                                    .map(|client_ref| client_ref.get_client())
-                                    .map(|client| (*g_addr, (client, 0)))
-                            })
-                            .collect::<HashMap<_, _>>()
-                    })
+                    self.groups
+                        .get_addressess(addr)
+                        .map(|addresses| {
+                            addresses
+                                .iter()
+                                .filter_map(|g_addr| {
+                                    self.client_storage
+                                        .get(g_addr)
+                                        .map(|client_ref| client_ref.get_client())
+                                        .map(|client| (*g_addr, (client, 0)))
+                                })
+                                .collect::<HashMap<_, _>>()
+                        })
+                        .filter(|addresses| !addresses.is_empty())
                 } else {
                     let codec = client_ref
                         .get_media()
                         .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
                         .and_then(|(m, r)| Some((r.marker, m.get_name(&r.payload).cloned()?)));
 
-                    self.groups.get_addressess(addr).map(|addresses| {
-                        addresses
-                            .iter()
-                            .filter_map(|g_addr| {
-                                self.client_storage
-                                    .get(&g_addr)
-                                    .and_then(|client_ref| {
-                                        Some((client_ref.get_media()?, client_ref.get_client()))
-                                    })
-                                    .and_then(|(media, client)| {
-                                        let (marker, payload) = codec.as_ref()?;
-                                        let new_payload = media.get_id(payload).copied()?;
-                                        Some((
-                                            *g_addr,
-                                            (client, calculate_payload(*marker, new_payload)),
-                                        ))
-                                    })
-                            })
-                            .collect::<HashMap<_, _>>()
-                    })
+                    self.groups
+                        .get_addressess(addr)
+                        .map(|addresses| {
+                            addresses
+                                .iter()
+                                .filter_map(|g_addr| {
+                                    self.client_storage
+                                        .get(&g_addr)
+                                        .and_then(|client_ref| {
+                                            Some((client_ref.get_media()?, client_ref.get_client()))
+                                        })
+                                        .and_then(|(media, client)| {
+                                            let (marker, payload) = codec.as_ref()?;
+                                            let new_payload = media.get_id(payload).copied()?;
+                                            Some((
+                                                *g_addr,
+                                                (client, calculate_payload(*marker, new_payload)),
+                                            ))
+                                        })
+                                })
+                                .collect::<HashMap<_, _>>()
+                        })
+                        .filter(|addresses| !addresses.is_empty())
                 };
 
                 let processor = self.processor.clone();
                 let processor_two = self.processor.clone();
 
-                if let Some(addresses) = addresses.filter(|addresses| !addresses.is_empty()) {
+                if let Some(addresses) = addresses {
                     ctx.spawn(
                         client
                             .lock_owned()
