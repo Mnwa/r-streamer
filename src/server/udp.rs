@@ -1,3 +1,4 @@
+use crate::rtp::core::RtpHeader;
 use crate::sdp::media::{MediaAddrMessage, MediaListRef, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
@@ -6,7 +7,6 @@ use crate::{
         sessions::{Session, SessionMessage, SessionsStorage},
     },
     dtls::is_dtls,
-    rtp::core::{is_rtcp, parse_rtp},
     server::{crypto::Crypto, meta::ServerMeta},
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
@@ -44,7 +44,7 @@ impl UdpRecv {
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
             let stream = futures::stream::unfold(recv, |mut server| {
-                ready(vec![0; 0x10000])
+                ready(vec![0; 1458])
                     .then(|mut message| async move {
                         server.recv_from(&mut message).await.map(|(n, addr)| {
                             message.truncate(n);
@@ -132,7 +132,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                         .into_actor(self),
                 );
             }
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("recv unknown request"),
         }
     }
 }
@@ -209,7 +209,7 @@ impl Handler<WebRtcRequest> for UdpSend {
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             WebRtcRequest::Stun(req, addr) => {
-                let mut message_buf: Vec<u8> = vec![0; 0x10000];
+                let mut message_buf: Vec<u8> = vec![0; 1458];
                 let n = write_stun_success_response(
                     req.transaction_id,
                     addr,
@@ -269,7 +269,7 @@ impl Handler<WebRtcRequest> for UdpSend {
                         .into_actor(self),
                 );
             }
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("send unknown request"),
         }
     }
 }
@@ -309,11 +309,11 @@ impl WebRtcRequest {
 
 impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
     fn from((buf, addr): (Vec<u8>, SocketAddr)) -> Self {
+        if RtpHeader::is_rtp_header(&buf) {
+            return WebRtcRequest::Rtc(buf, addr);
+        }
         if let Some(stun) = parse_stun_binding_request(&buf) {
             return WebRtcRequest::Stun(stun, addr);
-        }
-        if parse_rtp(&buf).is_some() || is_rtcp(&buf) {
-            return WebRtcRequest::Rtc(buf, addr);
         }
         if is_dtls(&buf) {
             return WebRtcRequest::Dtls(buf, addr);

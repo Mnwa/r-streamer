@@ -175,140 +175,55 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         client,
                                         is_rtcp,
                                     })
-                                    .into_future()
-                            })
-                            .map(|message_result| {
-                                message_result
                                     .map_err(ErrorParse::from)
-                                    .and_then(|message_processed| message_processed)
+                                    .map(|message_result| {
+                                        message_result
+                                            .and_then(|message_processed| message_processed)
+                                    })
                             })
                             .and_then(move |message| {
-                                let processor = processor_two.clone();
-
                                 iter(addresses)
                                     .then(move |(addr, (client, payload))| {
-                                        let udp_send = udp_send.clone();
-                                        let message = message.clone();
-                                        let processor = processor.clone();
-                                        async move {
-                                            let client = client.lock_owned().await;
-                                            let result = processor
-                                                .send(ProtectRtpPacket {
-                                                    message,
-                                                    addr,
-                                                    client,
-                                                    is_rtcp,
-                                                    payload,
-                                                })
-                                                .await;
-                                            let message = match result {
-                                                Ok(message_protected) => match message_protected {
-                                                    Ok(m) => m,
-                                                    Err(e) => {
-                                                        warn!("protecting err: {}", e);
-                                                        Vec::new()
-                                                    }
-                                                },
-                                                Err(e) => {
-                                                    warn!("processor mailbox err: {}", e);
-                                                    Vec::new()
-                                                }
-                                            };
-                                            udp_send.send(WebRtcRequest::Rtc(message, addr)).await
-                                        }
+                                        client
+                                            .lock_owned()
+                                            .map(move |client| (addr, (client, payload)))
+                                    })
+                                    .then(move |(addr, (client, payload))| {
+                                        processor_two
+                                            .send(ProtectRtpPacket {
+                                                message: message.clone(),
+                                                addr,
+                                                client,
+                                                is_rtcp,
+                                                payload,
+                                            })
+                                            .map_err(ErrorParse::from)
+                                            .map(move |message_result| {
+                                                message_result
+                                                    .and_then(|message_processed| message_processed)
+                                                    .map(|message| (message, addr))
+                                            })
+                                    })
+                                    .and_then(move |(message, addr)| {
+                                        udp_send
+                                            .send(WebRtcRequest::Rtc(message, addr))
+                                            .map_err(ErrorParse::from)
                                     })
                                     .map_err(ErrorParse::from)
                                     .try_collect::<Vec<_>>()
                             })
                             .inspect_err(|e| {
                                 if !e.should_ignored() {
-                                    warn!("processor err: {}", e)
+                                    warn!("processor err: {:?}", e)
                                 }
                             })
                             .map(|_| ())
                             .into_actor(self),
                     );
                 }
-
-                // ctx.spawn(
-                //     async move {
-                //         let client_unlocked = client.lock_owned().await;
-                //
-                //         let message_result = processor
-                //             .send(ProcessRtpPacket {
-                //                 message,
-                //                 addr,
-                //                 client: client_unlocked,
-                //                 is_rtcp,
-                //             })
-                //             .await;
-                //
-                //         let message = match message_result {
-                //             Ok(message_processed) => match message_processed {
-                //                 Ok(message) => message,
-                //                 Err(e) => {
-                //                     if !e.should_ignored() {
-                //                         warn!("processor parsing err: {}", e);
-                //                     }
-                //                     return;
-                //                 }
-                //             },
-                //             Err(e) => {
-                //                 warn!("processor mailbox err: {}", e);
-                //                 return;
-                //             }
-                //         };
-                //
-                //         let addresses_processed =
-                //             addresses.filter(|addresses| !addresses.is_empty());
-                //
-                //         if let Some(addresses) = addresses_processed {
-                //             let is_sent = iter(addresses)
-                //                 .then(|(addr, (client, payload))| {
-                //                     let udp_send = udp_send.clone();
-                //                     let message = message.clone();
-                //                     let processor = processor.clone();
-                //                     async move {
-                //                         let client = client.lock_owned().await;
-                //                         let result = processor
-                //                             .send(ProtectRtpPacket {
-                //                                 message,
-                //                                 addr,
-                //                                 client,
-                //                                 is_rtcp,
-                //                                 payload,
-                //                             })
-                //                             .await;
-                //                         let message = match result {
-                //                             Ok(message_protected) => match message_protected {
-                //                                 Ok(m) => m,
-                //                                 Err(e) => {
-                //                                     warn!("protecting err: {}", e);
-                //                                     Vec::new()
-                //                                 }
-                //                             },
-                //                             Err(e) => {
-                //                                 warn!("processor mailbox err: {}", e);
-                //                                 Vec::new()
-                //                             }
-                //                         };
-                //                         udp_send.send(WebRtcRequest::Rtc(message, addr)).await
-                //                     }
-                //                 })
-                //                 .try_collect::<Vec<_>>()
-                //                 .await;
-                //
-                //             if let Err(e) = is_sent {
-                //                 warn!("udp send err: {}", e)
-                //             }
-                //         } else {
-                //         }
-                //     }
-                //     .into_actor(self),
-                // );
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("client actor unknown request"),
         }
     }
 }

@@ -3,11 +3,6 @@ use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
     server::udp::WebRtcRequest,
 };
-use rtp_rs::RtpReader;
-
-pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
-    RtpReader::new(buf).ok()
-}
 
 pub fn rtp_processor(
     request: WebRtcRequest,
@@ -48,12 +43,9 @@ pub fn rtcp_processor(
     )))
 }
 
+#[inline]
 pub fn is_rtcp(buf: &[u8]) -> bool {
-    if buf.len() < 4 {
-        return false;
-    }
-
-    if (buf[0] >> 6) != 2 {
+    if !RtpHeader::is_rtp_header(buf) {
         return false;
     }
     if buf[1] < 200 || buf[1] > 206 {
@@ -69,14 +61,22 @@ pub struct RtpHeader {
 }
 
 impl RtpHeader {
-    pub fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
-        if buf.len() <= 2 {
-            return Err(ErrorParse::UnsupportedFormat);
+    #[inline]
+    pub fn is_rtp_header(buf: &[u8]) -> bool {
+        if buf.len() <= 12 {
+            return false;
         }
 
         let version = buf[0] >> 6;
 
         if version != 2 {
+            return false;
+        }
+
+        true
+    }
+    pub fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
+        if !RtpHeader::is_rtp_header(buf) {
             return Err(ErrorParse::UnsupportedFormat);
         }
 
