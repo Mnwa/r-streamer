@@ -1446,7 +1446,6 @@ dependencies = [
  "openssl",
  "openssl-sys",
  "rand",
- "rtp-rs",
  "srtp",
  "tokio",
  "tokio-openssl",
@@ -1527,12 +1526,6 @@ dependencies = [
  "hostname",
  "quick-error",
 ]
-
-[[package]]
-name = "rtp-rs"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1110d695193d446e901de09921ffbf2d86ae351bbfde9c5b53863ce177e17f5"
 
 [[package]]
 name = "rustc-demangle"
