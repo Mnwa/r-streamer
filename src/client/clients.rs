@@ -5,6 +5,8 @@ use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
 use futures::{channel::mpsc::SendError, prelude::*, stream::FusedStream};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::{
     collections::HashMap,
     error::Error,
@@ -82,41 +84,45 @@ impl From<ErrorParse> for ClientError {
     }
 }
 
-pub type ClientsRefStorage = HashMap<SocketAddr, ClientRef>;
+pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 
-pub struct ClientRef(
-    Arc<Mutex<Client>>,
-    ClientSslPacketsChannels,
-    Option<Arc<MediaList>>,
-);
+pub type ClientSafeRef = Rc<RefCell<ClientRef>>;
+
+pub struct ClientRef {
+    client: Arc<Mutex<Client>>,
+    channels: ClientSslPacketsChannels,
+    media: Option<Arc<MediaList>>,
+    receivers: HashMap<SocketAddr, ClientSafeRef>,
+    is_deleted: bool,
+}
 impl ClientRef {
     pub fn get_client(&self) -> Arc<Mutex<Client>> {
-        Arc::clone(&self.0)
+        Arc::clone(&self.client)
     }
     pub fn get_media(&self) -> Option<Arc<MediaList>> {
-        self.2.as_ref().map(|m| Arc::clone(m))
+        self.media.as_ref().map(|m| Arc::clone(m))
     }
     pub fn set_media(&mut self, media: Arc<MediaList>) {
-        self.2 = Some(media)
+        self.media = Some(media)
     }
-}
-
-impl From<Client> for ClientRef {
-    fn from(c: Client) -> Self {
-        let channels = c.channels.clone();
-        ClientRef(Arc::new(Mutex::new(c)), channels, None)
+    pub fn add_receiver(&mut self, addr: SocketAddr, client: ClientSafeRef) {
+        self.receivers.insert(addr, client);
     }
-}
 
-impl Default for ClientRef {
-    fn default() -> Self {
-        Client::default().into()
+    pub fn get_receivers(&self) -> &HashMap<SocketAddr, ClientSafeRef> {
+        &self.receivers
     }
-}
 
-impl ClientRef {
+    pub fn delete(&mut self) {
+        self.is_deleted = true
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.is_deleted
+    }
+
     pub fn outgoing_stream(&self, addr: SocketAddr) -> impl Stream<Item = DtlsMessage> {
-        let outgoing_reader = Arc::clone(&self.1.outgoing_reader);
+        let outgoing_reader = Arc::clone(&self.channels.outgoing_reader);
         futures::stream::unfold(
             (outgoing_reader, addr),
             |(outgoing_reader, addr)| async move {
@@ -135,6 +141,25 @@ impl ClientRef {
     }
 
     pub fn get_channels(&self) -> &ClientSslPacketsChannels {
-        &self.1
+        &self.channels
+    }
+}
+
+impl From<Client> for ClientRef {
+    fn from(c: Client) -> Self {
+        let channels = c.channels.clone();
+        ClientRef {
+            client: Arc::new(Mutex::new(c)),
+            channels,
+            media: None,
+            receivers: HashMap::new(),
+            is_deleted: false,
+        }
+    }
+}
+
+impl Default for ClientRef {
+    fn default() -> Self {
+        Client::default().into()
     }
 }

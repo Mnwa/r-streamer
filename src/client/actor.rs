@@ -21,6 +21,8 @@ use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use openssl::ssl::SslAcceptor;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::Instant;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
 
@@ -57,10 +59,11 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let client_ref = self.client_storage.entry(addr).or_default();
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
-                ctx.add_message_stream(client_ref.outgoing_stream(addr));
+                ctx.add_message_stream(client_ref.borrow().outgoing_stream(addr));
 
-                let incoming_writer = Arc::clone(&client_ref.get_channels().incoming_writer);
-                let client = client_ref.get_client();
+                let incoming_writer =
+                    Arc::clone(&client_ref.borrow().get_channels().incoming_writer);
+                let client = client_ref.borrow().get_client();
 
                 let self_addr = ctx.address();
 
@@ -114,62 +117,66 @@ impl Handler<WebRtcRequest> for ClientActor {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
+                let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = self.client_storage.entry(addr).or_default();
-                let client = client_ref.get_client();
+                let client = client_ref.borrow().get_client();
 
                 let is_rtcp = is_rtcp(&message);
 
                 let addresses = if is_rtcp {
-                    self.groups
-                        .get_addressess(addr)
-                        .map(|addresses| {
-                            addresses
-                                .iter()
-                                .filter_map(|g_addr| {
-                                    self.client_storage
-                                        .get(g_addr)
-                                        .map(|client_ref| client_ref.get_client())
-                                        .map(|client| (*g_addr, (client, 0)))
-                                })
-                                .collect::<HashMap<_, _>>()
-                        })
-                        .filter(|addresses| !addresses.is_empty())
+                    client_ref
+                        .borrow()
+                        .get_receivers()
+                        .iter()
+                        .filter(|(_, client)| !client.borrow().is_deleted())
+                        .map(|(g_addr, client)| (*g_addr, (client.borrow().get_client(), 0)))
+                        .collect::<HashMap<_, _>>()
                 } else {
                     let codec = client_ref
+                        .borrow()
                         .get_media()
                         .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
                         .and_then(|(m, r)| Some((r.marker, m.get_name(&r.payload).cloned()?)));
 
-                    self.groups
-                        .get_addressess(addr)
-                        .map(|addresses| {
-                            addresses
-                                .iter()
-                                .filter_map(|g_addr| {
-                                    self.client_storage
-                                        .get(&g_addr)
-                                        .and_then(|client_ref| {
-                                            Some((client_ref.get_media()?, client_ref.get_client()))
-                                        })
-                                        .and_then(|(media, client)| {
-                                            let (marker, payload) = codec.as_ref()?;
-                                            let new_payload = media.get_id(payload).copied()?;
-                                            Some((
-                                                *g_addr,
-                                                (client, calculate_payload(*marker, new_payload)),
-                                            ))
-                                        })
-                                })
-                                .collect::<HashMap<_, _>>()
-                        })
-                        .filter(|addresses| !addresses.is_empty())
+                    if let Some((marker, codec_format)) = codec {
+                        client_ref
+                            .borrow()
+                            .get_receivers()
+                            .iter()
+                            .filter(|(_, client)| !client.borrow().is_deleted())
+                            .filter_map(|(g_addr, client_ref)| {
+                                let media = client_ref
+                                    .borrow()
+                                    .get_media()?
+                                    .get_id(&codec_format)
+                                    .copied()?;
+                                Some((
+                                    *g_addr,
+                                    (
+                                        client_ref.borrow().get_client(),
+                                        calculate_payload(marker, media),
+                                    ),
+                                ))
+                            })
+                            .collect::<HashMap<_, _>>()
+                    } else {
+                        client_ref
+                            .borrow()
+                            .get_receivers()
+                            .iter()
+                            .filter(|(_, client)| !client.borrow().is_deleted())
+                            .map(|(g_addr, client_ref)| {
+                                (*g_addr, (client_ref.borrow().get_client(), 0))
+                            })
+                            .collect::<HashMap<_, _>>()
+                    }
                 };
 
                 let processor = self.processor.clone();
                 let processor_two = self.processor.clone();
 
-                if let Some(addresses) = addresses {
+                if !addresses.is_empty() {
                     ctx.spawn(
                         client
                             .lock_owned()
@@ -223,7 +230,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     warn!("processor err: {:?}", e)
                                 }
                             })
-                            .map(|_| ())
+                            .map(move |_| println!("{:?}", start.elapsed()))
                             .into_actor(self),
                     );
                 }
@@ -265,13 +272,8 @@ impl Handler<DeleteMessage> for ClientActor {
     ) -> Self::Result {
         self.client_storage
             .remove(&addr)
-            .and_then(|_| {
-                if self.groups.remove_client(addr) {
-                    Some(())
-                } else {
-                    None
-                }
-            })
+            .map(|client| client.borrow_mut().delete())
+            .map(|_| self.groups.remove_sender(addr))
             .is_some()
     }
 }
@@ -284,8 +286,20 @@ impl Handler<GroupId> for ClientActor {
         GroupId(group_id, addr): GroupId,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        if self.client_storage.contains_key(&addr) {
-            self.groups.insert_client(group_id, addr)
+        let sender_addr = self.groups.insert_or_get_sender(group_id, addr);
+        let result = self
+            .client_storage
+            .get(&addr)
+            .map(|client_ref| (Rc::clone(client_ref), sender_addr))
+            .filter(|(_, sender_addr)| *sender_addr != addr)
+            .and_then(|(client_ref, sender_addr)| {
+                self.client_storage
+                    .get_mut(&sender_addr)
+                    .map(|sender_ref| (client_ref, sender_ref))
+            });
+
+        if let Some((client_ref, sender_ref)) = result {
+            sender_ref.borrow_mut().add_receiver(addr, client_ref);
         }
     }
 }
@@ -299,7 +313,7 @@ impl Handler<MediaAddrMessage> for ClientActor {
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
         if let Some(c) = self.client_storage.get_mut(&addr) {
-            c.set_media(media)
+            c.borrow_mut().set_media(media)
         }
     }
 }
