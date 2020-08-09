@@ -59,11 +59,11 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let client_ref = self.client_storage.entry(addr).or_default();
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
-                ctx.add_message_stream(client_ref.borrow().outgoing_stream(addr));
+                ctx.add_message_stream(client_ref.as_ref().borrow().outgoing_stream(addr));
 
                 let incoming_writer =
-                    Arc::clone(&client_ref.borrow().get_channels().incoming_writer);
-                let client = client_ref.borrow().get_client();
+                    Arc::clone(&client_ref.as_ref().borrow().get_channels().incoming_writer);
+                let client = client_ref.as_ref().borrow().get_client();
 
                 let self_addr = ctx.address();
 
@@ -120,20 +120,24 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = self.client_storage.entry(addr).or_default();
-                let client = client_ref.borrow().get_client();
+                let client = client_ref.as_ref().borrow().get_client();
 
                 let is_rtcp = is_rtcp(&message);
 
                 let addresses = if is_rtcp {
                     client_ref
+                        .as_ref()
                         .borrow()
                         .get_receivers()
                         .iter()
-                        .filter(|(_, client)| !client.borrow().is_deleted())
-                        .map(|(g_addr, client)| (*g_addr, (client.borrow().get_client(), 0)))
+                        .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
+                        .map(|(g_addr, client)| {
+                            (*g_addr, (client.as_ref().borrow().get_client(), 0))
+                        })
                         .collect::<HashMap<_, _>>()
                 } else {
                     let codec = client_ref
+                        .as_ref()
                         .borrow()
                         .get_media()
                         .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
@@ -141,12 +145,14 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                     if let Some((marker, codec_format)) = codec {
                         client_ref
+                            .as_ref()
                             .borrow()
                             .get_receivers()
                             .iter()
-                            .filter(|(_, client)| !client.borrow().is_deleted())
+                            .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
                             .filter_map(|(g_addr, client_ref)| {
                                 let media = client_ref
+                                    .as_ref()
                                     .borrow()
                                     .get_media()?
                                     .get_id(&codec_format)
@@ -154,7 +160,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 Some((
                                     *g_addr,
                                     (
-                                        client_ref.borrow().get_client(),
+                                        client_ref.as_ref().borrow().get_client(),
                                         calculate_payload(marker, media),
                                     ),
                                 ))
@@ -162,12 +168,13 @@ impl Handler<WebRtcRequest> for ClientActor {
                             .collect::<HashMap<_, _>>()
                     } else {
                         client_ref
+                            .as_ref()
                             .borrow()
                             .get_receivers()
                             .iter()
-                            .filter(|(_, client)| !client.borrow().is_deleted())
+                            .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
                             .map(|(g_addr, client_ref)| {
-                                (*g_addr, (client_ref.borrow().get_client(), 0))
+                                (*g_addr, (client_ref.as_ref().borrow().get_client(), 0))
                             })
                             .collect::<HashMap<_, _>>()
                     }
@@ -274,6 +281,14 @@ impl Handler<DeleteMessage> for ClientActor {
             .remove(&addr)
             .map(|client| client.borrow_mut().delete())
             .map(|_| self.groups.remove_sender(addr))
+            .map(|_| {
+                self.client_storage
+                    .iter_mut()
+                    .filter(|(_addr, client_ref)| {
+                        client_ref.as_ref().borrow().get_receivers().is_empty()
+                    })
+                    .for_each(|(_, client_ref)| client_ref.as_ref().borrow_mut().clear())
+            })
             .is_some()
     }
 }

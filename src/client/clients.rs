@@ -113,6 +113,11 @@ impl ClientRef {
         &self.receivers
     }
 
+    pub fn clear(&mut self) {
+        self.receivers
+            .retain(|_, client_ref| !client_ref.as_ref().borrow().is_deleted());
+    }
+
     pub fn delete(&mut self) {
         self.is_deleted = true
     }

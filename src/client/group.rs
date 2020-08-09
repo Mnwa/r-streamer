@@ -14,12 +14,8 @@ impl Group {
     }
 
     pub fn remove_sender(&mut self, addr: SocketAddr) {
-        self.groups_storage = self
-            .groups_storage
-            .iter()
-            .filter(|(_, sender_addr)| addr != **sender_addr)
-            .map(|(g_id, s_addr)| (*g_id, *s_addr))
-            .collect()
+        self.groups_storage
+            .retain(|_, sender_addr| addr != *sender_addr);
     }
 }
 
