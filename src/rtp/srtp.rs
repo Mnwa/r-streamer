@@ -43,28 +43,20 @@ impl SrtpTransport {
         })
     }
 
-    pub fn protect(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.server.protect(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn protect(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+        self.server.protect(buf).map_err(|e| e.into())
     }
 
-    pub fn protect_rtcp(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.server.protect_rtcp(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn protect_rtcp(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+        self.server.protect_rtcp(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.client.unprotect(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn unprotect(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+        self.client.unprotect(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect_rctp(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.client.unprotect_rtcp(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn unprotect_rctp(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+        self.client.unprotect_rtcp(buf).map_err(|e| e.into())
     }
 }
 
@@ -73,7 +65,6 @@ pub enum ErrorParse {
     Openssl(ErrorStack),
     Srtp(ErrorSrtp),
     UnsupportedProfile(String),
-    UnsupportedRequest(String),
     UnsupportedFormat,
     ClientNotReady(SocketAddr),
     ActorDead(MailboxError),
@@ -92,7 +83,6 @@ impl Display for ErrorParse {
             ErrorParse::Openssl(e) => write!(f, "{}", e),
             ErrorParse::Srtp(e) => write!(f, "{:?}", e),
             ErrorParse::UnsupportedProfile(e) => write!(f, "Unsupported profile: {}", e),
-            ErrorParse::UnsupportedRequest(e) => write!(f, "Unsupported request: {}", e),
             ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
             ErrorParse::ClientNotReady(addr) => write!(f, "Client not ready: {}", addr),
             ErrorParse::ActorDead(e) => write!(f, "Actor is dead: {:?}", e),

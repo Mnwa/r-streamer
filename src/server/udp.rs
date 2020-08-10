@@ -11,6 +11,7 @@ use crate::{
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
 use actix::prelude::*;
+use actix_web::web::BytesMut;
 use futures::future::ready;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
@@ -44,8 +45,9 @@ impl UdpRecv {
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
             let stream = futures::stream::unfold(recv, |mut server| {
-                ready(vec![0; 1458])
+                ready(BytesMut::with_capacity(1200))
                     .then(|mut message| async move {
+                        unsafe { message.set_len(1200) }
                         server.recv_from(&mut message).await.map(|(n, addr)| {
                             message.truncate(n);
                             ((message, addr), server)
@@ -291,24 +293,13 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
 #[derive(Debug, Clone)]
 pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
-    Dtls(Vec<u8>, SocketAddr),
-    Rtc(Vec<u8>, SocketAddr),
+    Dtls(BytesMut, SocketAddr),
+    Rtc(BytesMut, SocketAddr),
     Unknown,
 }
 
-impl WebRtcRequest {
-    pub fn get_type(&self) -> &str {
-        match self {
-            WebRtcRequest::Stun(_, _) => "stun",
-            WebRtcRequest::Dtls(_, _) => "dtls",
-            WebRtcRequest::Rtc(_, _) => "rtp",
-            WebRtcRequest::Unknown => "unknown",
-        }
-    }
-}
-
-impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
-    fn from((buf, addr): (Vec<u8>, SocketAddr)) -> Self {
+impl From<(BytesMut, SocketAddr)> for WebRtcRequest {
+    fn from((buf, addr): (BytesMut, SocketAddr)) -> Self {
         if RtpHeader::is_rtp_header(&buf) {
             return WebRtcRequest::Rtc(buf, addr);
         }

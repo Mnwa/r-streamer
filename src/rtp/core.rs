@@ -1,47 +1,4 @@
-use crate::rtp::srtp::ErrorParse::UnsupportedRequest;
-use crate::{
-    rtp::srtp::{ErrorParse, SrtpTransport},
-    server::udp::WebRtcRequest,
-};
-
-pub fn rtp_processor(
-    request: WebRtcRequest,
-    transport: Option<&mut SrtpTransport>,
-) -> Result<Vec<u8>, ErrorParse> {
-    if let WebRtcRequest::Rtc(mut message, _addr) = request {
-        if let Some(transport) = transport {
-            message = transport.unprotect(&message)?;
-        }
-
-        // let rtp_header = RtpHeader::from_buf(&message)?;
-        //
-        // if rtp_header.payload == 111 {
-        //     return Err(ErrorParse::UnsupportedFormat);
-        // }
-
-        return Ok(message);
-    }
-    Err(UnsupportedRequest(format!(
-        "unsupported request {}, when waiting rtc",
-        request.get_type()
-    )))
-}
-
-pub fn rtcp_processor(
-    request: WebRtcRequest,
-    transport: Option<&mut SrtpTransport>,
-) -> Result<Vec<u8>, ErrorParse> {
-    if let WebRtcRequest::Rtc(mut message, _addr) = request {
-        if let Some(transport) = transport {
-            message = transport.unprotect_rctp(&message)?;
-        }
-        return Ok(message);
-    }
-    Err(UnsupportedRequest(format!(
-        "unsupported request {}, when waiting rtc",
-        request.get_type()
-    )))
-}
+use crate::rtp::srtp::ErrorParse;
 
 #[inline]
 pub fn is_rtcp(buf: &[u8]) -> bool {

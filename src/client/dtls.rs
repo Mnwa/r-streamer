@@ -2,12 +2,13 @@ use crate::{
     client::clients::{Client, ClientError, ClientState},
     client::stream::IncomingWriter,
 };
+use bytes::BytesMut;
 use futures::prelude::*;
 use tokio::prelude::*;
 
 pub async fn push_dtls(
     incoming_writer: &mut IncomingWriter,
-    buf: Vec<u8>,
+    buf: BytesMut,
 ) -> Result<(), ClientError> {
     incoming_writer.send(buf).await.map_err(|e| e.into())
 }

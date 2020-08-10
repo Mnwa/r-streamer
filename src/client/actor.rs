@@ -1,4 +1,4 @@
-use crate::rtp::core::{rtcp_processor, rtp_processor, RtpHeader};
+use crate::rtp::core::RtpHeader;
 use crate::rtp::srtp::ErrorParse;
 use crate::sdp::media::MediaAddrMessage;
 use crate::{
@@ -113,7 +113,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                     .into_actor(self),
                 );
             }
-            WebRtcRequest::Rtc(message, addr) => {
+            WebRtcRequest::Rtc(mut message, addr) => {
                 let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = self.client_storage.entry(addr).or_default();
@@ -178,16 +178,17 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 actix_threadpool::run(move || {
                                     if let ClientState::Connected(_, srtp) = &mut client.state {
                                         if is_rtcp {
-                                            rtcp_processor(
-                                                WebRtcRequest::Rtc(message, addr),
-                                                Some(srtp),
-                                            )
+                                            srtp.unprotect_rctp(&mut message)?;
                                         } else {
-                                            rtp_processor(
-                                                WebRtcRequest::Rtc(message, addr),
-                                                Some(srtp),
-                                            )
+                                            srtp.unprotect(&mut message)?;
+
+                                            // let rtp_header = RtpHeader::from_buf(&message)?;
+                                            //
+                                            // if rtp_header.payload == 111 {
+                                            //     return Err(ErrorParse::UnsupportedFormat);
+                                            // }
                                         }
+                                        Ok(message)
                                     } else {
                                         Err(ErrorParse::ClientNotReady(addr))
                                     }
@@ -202,19 +203,18 @@ impl Handler<WebRtcRequest> for ClientActor {
                                             .map(move |client| (addr, (client, payload)))
                                     })
                                     .then(move |(addr, (mut client, payload))| {
-                                        let message = message.clone();
+                                        let mut message = message.clone();
                                         actix_threadpool::run(move || {
                                             if let ClientState::Connected(_, srtp) =
                                                 &mut client.state
                                             {
                                                 if is_rtcp {
-                                                    srtp.protect_rtcp(&message)
+                                                    srtp.protect_rtcp(&mut message)?;
                                                 } else {
-                                                    srtp.protect(&message).map(|mut m| {
-                                                        m[1] = payload;
-                                                        m
-                                                    })
+                                                    srtp.protect(&mut message)?;
+                                                    message[1] = payload;
                                                 }
+                                                Ok(message)
                                             } else {
                                                 Err(ErrorParse::ClientNotReady(addr))
                                             }
@@ -230,9 +230,9 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     .map_err(ErrorParse::from)
                                     .try_collect::<Vec<_>>()
                             })
-                            .inspect_err(|e| {
+                            .inspect_err(move |e| {
                                 if !e.should_ignored() {
-                                    warn!("processor err: {:?}", e)
+                                    warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
                                 }
                             })
                             .map(move |_| println!("{:?}", start.elapsed()))

@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     lock::Mutex,
@@ -35,11 +36,11 @@ pub struct ClientSslPacketsChannels {
     pub outgoing_reader: Arc<Mutex<OutgoingReader>>,
 }
 
-pub type IncomingWriter = UnboundedSender<Vec<u8>>;
-pub type IncomingReader = UnboundedReceiver<Vec<u8>>;
+pub type IncomingWriter = UnboundedSender<BytesMut>;
+pub type IncomingReader = UnboundedReceiver<BytesMut>;
 
-pub type OutgoingReader = UnboundedReceiver<Vec<u8>>;
-pub type OutgoingWriter = UnboundedSender<Vec<u8>>;
+pub type OutgoingReader = UnboundedReceiver<BytesMut>;
+pub type OutgoingWriter = UnboundedSender<BytesMut>;
 
 impl ClientSslPackets {
     pub fn new() -> (ClientSslPackets, ClientSslPacketsChannels) {
@@ -95,7 +96,7 @@ impl AsyncWrite for ClientSslPackets {
         match self
             .get_mut()
             .outgoing_writer
-            .send(buf.to_vec())
+            .send(BytesMut::from(buf))
             .poll_unpin(cx)
         {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),
