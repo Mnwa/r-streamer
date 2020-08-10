@@ -1,5 +1,4 @@
-use crate::rtp::core::RtpHeader;
-use crate::rtp::processor::{ProcessRtpPacket, ProcessorActor, ProtectRtpPacket};
+use crate::rtp::core::{rtcp_processor, rtp_processor, RtpHeader};
 use crate::rtp::srtp::ErrorParse;
 use crate::sdp::media::MediaAddrMessage;
 use crate::{
@@ -31,7 +30,6 @@ pub struct ClientActor {
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Addr<UdpSend>,
-    processor: Addr<ProcessorActor>,
 }
 
 impl ClientActor {
@@ -41,7 +39,6 @@ impl ClientActor {
             udp_send,
             client_storage: ClientsRefStorage::new(),
             groups: Group::default(),
-            processor: ProcessorActor::new(),
         })
     }
 }
@@ -180,26 +177,29 @@ impl Handler<WebRtcRequest> for ClientActor {
                     }
                 };
 
-                let processor = self.processor.clone();
-                let processor_two = self.processor.clone();
-
                 if !addresses.is_empty() {
                     ctx.spawn(
                         client
                             .lock_owned()
-                            .then(move |client| {
-                                processor
-                                    .send(ProcessRtpPacket {
-                                        message,
-                                        addr,
-                                        client,
-                                        is_rtcp,
-                                    })
-                                    .map_err(ErrorParse::from)
-                                    .map(|message_result| {
-                                        message_result
-                                            .and_then(|message_processed| message_processed)
-                                    })
+                            .then(move |mut client| {
+                                actix_threadpool::run(move || {
+                                    if let ClientState::Connected(_, srtp) = &mut client.state {
+                                        if is_rtcp {
+                                            rtcp_processor(
+                                                WebRtcRequest::Rtc(message, addr),
+                                                Some(srtp),
+                                            )
+                                        } else {
+                                            rtp_processor(
+                                                WebRtcRequest::Rtc(message, addr),
+                                                Some(srtp),
+                                            )
+                                        }
+                                    } else {
+                                        Err(ErrorParse::ClientNotReady(addr))
+                                    }
+                                })
+                                .map_err(ErrorParse::from)
                             })
                             .and_then(move |message| {
                                 iter(addresses)
@@ -208,21 +208,26 @@ impl Handler<WebRtcRequest> for ClientActor {
                                             .lock_owned()
                                             .map(move |client| (addr, (client, payload)))
                                     })
-                                    .then(move |(addr, (client, payload))| {
-                                        processor_two
-                                            .send(ProtectRtpPacket {
-                                                message: message.clone(),
-                                                addr,
-                                                client,
-                                                is_rtcp,
-                                                payload,
-                                            })
-                                            .map_err(ErrorParse::from)
-                                            .map(move |message_result| {
-                                                message_result
-                                                    .and_then(|message_processed| message_processed)
-                                                    .map(|message| (message, addr))
-                                            })
+                                    .then(move |(addr, (mut client, payload))| {
+                                        let message = message.clone();
+                                        actix_threadpool::run(move || {
+                                            if let ClientState::Connected(_, srtp) =
+                                                &mut client.state
+                                            {
+                                                if is_rtcp {
+                                                    srtp.protect_rtcp(&message)
+                                                } else {
+                                                    srtp.protect(&message).map(|mut m| {
+                                                        m[1] = payload;
+                                                        m
+                                                    })
+                                                }
+                                            } else {
+                                                Err(ErrorParse::ClientNotReady(addr))
+                                            }
+                                        })
+                                        .map_err(ErrorParse::from)
+                                        .map_ok(move |message| (message, addr))
                                     })
                                     .and_then(move |(message, addr)| {
                                         udp_send

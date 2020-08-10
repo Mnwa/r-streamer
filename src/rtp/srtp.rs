@@ -1,4 +1,5 @@
 use actix::MailboxError;
+use actix_threadpool::BlockingError;
 use bytes::BytesMut;
 use openssl::{error::ErrorStack, ssl::SslRef};
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
@@ -76,6 +77,7 @@ pub enum ErrorParse {
     UnsupportedFormat,
     ClientNotReady(SocketAddr),
     ActorDead(MailboxError),
+    ThreadPoolDead,
 }
 
 impl ErrorParse {
@@ -94,6 +96,7 @@ impl Display for ErrorParse {
             ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
             ErrorParse::ClientNotReady(addr) => write!(f, "Client not ready: {}", addr),
             ErrorParse::ActorDead(e) => write!(f, "Actor is dead: {:?}", e),
+            ErrorParse::ThreadPoolDead => write!(f, "Thread pool is dead"),
         }
     }
 }
@@ -115,5 +118,14 @@ impl From<ErrorSrtp> for ErrorParse {
 impl From<MailboxError> for ErrorParse {
     fn from(e: MailboxError) -> Self {
         ErrorParse::ActorDead(e)
+    }
+}
+
+impl From<BlockingError<ErrorParse>> for ErrorParse {
+    fn from(e: BlockingError<ErrorParse>) -> Self {
+        match e {
+            BlockingError::Error(e) => e,
+            BlockingError::Canceled => ErrorParse::ThreadPoolDead,
+        }
     }
 }
