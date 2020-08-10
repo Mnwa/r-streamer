@@ -222,13 +222,12 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         .map_err(ErrorParse::from)
                                         .map_ok(move |message| (message, addr))
                                     })
-                                    .and_then(move |(message, addr)| {
+                                    .try_for_each_concurrent(None, move |(message, addr)| {
                                         udp_send
                                             .send(WebRtcRequest::Rtc(message, addr))
                                             .map_err(ErrorParse::from)
                                     })
                                     .map_err(ErrorParse::from)
-                                    .try_collect::<Vec<_>>()
                             })
                             .inspect_err(move |e| {
                                 if !e.should_ignored() {
