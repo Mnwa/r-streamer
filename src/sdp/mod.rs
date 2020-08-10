@@ -76,7 +76,7 @@ pub async fn generate_streamer_response(
         .map(|client_user| Session::new(server_user.clone(), client_user))
         .map(|session| {
             (
-                MediaUserMessage(session.get_client(), Arc::new(req.media.clone().into())),
+                MediaUserMessage(session.get_client(), req.media.clone().into()),
                 SessionMessage(session, group_id),
             )
         })

@@ -2,12 +2,11 @@ use actix::Message;
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use webrtc_sdp::attribute_type::SdpAttribute;
 use webrtc_sdp::attribute_type::SdpAttribute::Rtpmap;
 use webrtc_sdp::media_type::SdpMedia;
 
-pub type MediaUserStorage = HashMap<String, MediaListRef>;
+pub type MediaUserStorage = HashMap<String, MediaList>;
 
 pub type MediaNamedMap = HashMap<String, u8>;
 pub type MediaMap = HashMap<u8, String>;
@@ -51,10 +50,8 @@ impl From<Vec<SdpMedia>> for MediaList {
     }
 }
 
-pub type MediaListRef = Arc<MediaList>;
-
-pub struct MediaUserMessage(pub String, pub MediaListRef);
-pub struct MediaAddrMessage(pub SocketAddr, pub MediaListRef);
+pub struct MediaUserMessage(pub String, pub MediaList);
+pub struct MediaAddrMessage(pub SocketAddr, pub MediaList);
 
 impl Message for MediaUserMessage {
     type Result = ();

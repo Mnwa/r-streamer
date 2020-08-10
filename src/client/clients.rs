@@ -91,7 +91,7 @@ pub type ClientSafeRef = Rc<RefCell<ClientRef>>;
 pub struct ClientRef {
     client: Arc<Mutex<Client>>,
     channels: ClientSslPacketsChannels,
-    media: Option<Arc<MediaList>>,
+    media: Option<MediaList>,
     receivers: HashMap<SocketAddr, ClientSafeRef>,
     is_deleted: bool,
 }
@@ -99,10 +99,10 @@ impl ClientRef {
     pub fn get_client(&self) -> Arc<Mutex<Client>> {
         Arc::clone(&self.client)
     }
-    pub fn get_media(&self) -> Option<Arc<MediaList>> {
-        self.media.as_ref().map(|m| Arc::clone(m))
+    pub fn get_media(&self) -> &Option<MediaList> {
+        &self.media
     }
-    pub fn set_media(&mut self, media: Arc<MediaList>) {
+    pub fn set_media(&mut self, media: MediaList) {
         self.media = Some(media)
     }
     pub fn add_receiver(&mut self, addr: SocketAddr, client: ClientSafeRef) {

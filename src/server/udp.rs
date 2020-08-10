@@ -1,5 +1,5 @@
 use crate::rtp::core::RtpHeader;
-use crate::sdp::media::{MediaAddrMessage, MediaListRef, MediaUserMessage, MediaUserStorage};
+use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
         actor::ClientActor,
@@ -91,7 +91,7 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
                     let media = self
                         .media_sessions
                         .get(&req.remote_user)
-                        .map(MediaListRef::clone);
+                        .map(MediaList::clone);
 
                     if let Some(media) = media {
                         ctx.spawn(

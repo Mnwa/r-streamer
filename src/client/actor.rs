@@ -117,8 +117,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = self.client_storage.entry(addr).or_default();
-                let client = client_ref.as_ref().borrow().get_client();
-
                 let is_rtcp = is_rtcp(&message);
 
                 let addresses = if is_rtcp {
@@ -133,10 +131,12 @@ impl Handler<WebRtcRequest> for ClientActor {
                         })
                         .collect::<HashMap<_, _>>()
                 } else {
+                    let start1 = Instant::now();
                     let codec = client_ref
                         .as_ref()
                         .borrow()
                         .get_media()
+                        .as_ref()
                         .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
                         .and_then(|(m, r)| Some((r.marker, m.get_name(&r.payload).cloned()?)));
 
@@ -151,8 +151,9 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 let media = client_ref
                                     .as_ref()
                                     .borrow()
-                                    .get_media()?
-                                    .get_id(&codec_format)
+                                    .get_media()
+                                    .as_ref()
+                                    .and_then(|media| media.get_id(&codec_format))
                                     .copied()?;
                                 Some((
                                     *g_addr,
@@ -164,18 +165,11 @@ impl Handler<WebRtcRequest> for ClientActor {
                             })
                             .collect::<HashMap<_, _>>()
                     } else {
-                        client_ref
-                            .as_ref()
-                            .borrow()
-                            .get_receivers()
-                            .iter()
-                            .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
-                            .map(|(g_addr, client_ref)| {
-                                (*g_addr, (client_ref.as_ref().borrow().get_client(), 0))
-                            })
-                            .collect::<HashMap<_, _>>()
+                        return;
                     }
                 };
+
+                let client = client_ref.as_ref().borrow().get_client();
 
                 if !addresses.is_empty() {
                     ctx.spawn(
