@@ -131,7 +131,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                         })
                         .collect::<HashMap<_, _>>()
                 } else {
-                    let start1 = Instant::now();
                     let codec = client_ref
                         .as_ref()
                         .borrow()
