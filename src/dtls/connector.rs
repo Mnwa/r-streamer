@@ -14,7 +14,7 @@ pub async fn connect(
     client: ClientSafeRef,
     ssl_acceptor: Arc<SslAcceptor>,
 ) -> Result<(), ClientError> {
-    let mut state = client.get_state().lock().await;
+    let mut state = client.get_state().write().await;
 
     let ssl_stream = match std::mem::replace(state.deref_mut(), ClientState::Shutdown) {
         ClientState::New(stream) => timeout(Duration::from_secs(10), accept(&ssl_acceptor, stream))

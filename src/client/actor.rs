@@ -19,7 +19,7 @@ use futures::stream::{iter, StreamExt, TryStreamExt};
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use openssl::ssl::SslAcceptor;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
@@ -72,9 +72,9 @@ impl Handler<WebRtcRequest> for ClientActor {
                         }
                         drop(incoming_writer);
 
-                        let mut state = client_ref.get_state().lock().await;
+                        let state = client_ref.get_state().read().await;
 
-                        match state.deref_mut() {
+                        match state.deref() {
                             ClientState::New(_) => {
                                 drop(state);
                                 if let Err(e) = connect(client_ref.clone(), acceptor).await {
@@ -121,8 +121,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                     async move {
                         let rtp_header = RtpHeader::from_buf(&message)?;
 
-                        let mut state = client_ref.get_state().lock().await;
-                        let media = client_ref.get_media().lock().await;
+                        let mut state = client_ref.get_state().write().await;
+                        let media = client_ref.get_media().read().await;
 
                         let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
                             if is_rtcp {
@@ -146,13 +146,13 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         drop(state);
 
-                        iter(client_ref.get_receivers().lock().await.iter())
+                        iter(client_ref.get_receivers().read().await.iter())
                             .map(|(r_addr, recv)| (*r_addr, recv.clone()))
                             .then(|(r_addr, recv)| {
                                 let mut message = message.clone();
 
                                 async move {
-                                    let mut state = recv.get_state().lock().await;
+                                    let mut state = recv.get_state().write().await;
 
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
                                         if is_rtcp {
@@ -160,7 +160,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         } else {
                                             srtp.protect(&mut message)?;
 
-                                            let media = recv.get_media().lock().await;
+                                            let media = recv.get_media().read().await;
 
                                             let payload = codec.and_then(|codec| {
                                                 media
@@ -302,7 +302,7 @@ impl Handler<DeleteMessage> for ClientActor {
             ctx.spawn(
                 async move {
                     client.delete();
-                    let mut receivers = client.get_receivers().lock().await;
+                    let mut receivers = client.get_receivers().write().await;
                     *receivers = iter(receivers.clone())
                         .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
                         .collect()
@@ -340,7 +340,7 @@ impl Handler<GroupId> for ClientActor {
         if let Some((client_ref, sender_ref)) = result {
             ctx.spawn(
                 async move {
-                    let mut receivers = sender_ref.get_receivers().lock().await;
+                    let mut receivers = sender_ref.get_receivers().write().await;
                     receivers.insert(addr, client_ref);
                 }
                 .into_actor(self),
@@ -360,7 +360,7 @@ impl Handler<MediaAddrMessage> for ClientActor {
         if let Some(c) = self.client_storage.get_mut(&addr).cloned() {
             ctx.spawn(
                 async move {
-                    let mut c_media = c.get_media().lock().await;
+                    let mut c_media = c.get_media().write().await;
                     *c_media = Some(media);
                 }
                 .into_actor(self),
