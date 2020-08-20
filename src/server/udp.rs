@@ -13,6 +13,7 @@ use crate::{
 use actix::prelude::*;
 use actix_web::web::BytesMut;
 use futures::future::ready;
+use futures::lock::Mutex;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
@@ -20,7 +21,6 @@ use tokio::{
     net::udp::{RecvHalf, SendHalf},
     net::UdpSocket,
     stream::StreamExt,
-    sync::Mutex,
     time::Duration,
 };
 
@@ -209,6 +209,7 @@ impl Handler<WebRtcRequest> for UdpSend {
     type Result = ();
 
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
+        let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
                 let mut message_buf: Vec<u8> = vec![0; 1458];
@@ -230,45 +231,37 @@ impl Handler<WebRtcRequest> for UdpSend {
                 message_buf.truncate(n);
 
                 ctx.spawn(
-                    self.send
-                        .clone()
-                        .lock_owned()
-                        .then(move |mut sender| async move {
-                            sender.send_to(&message_buf, &addr).await
-                        })
-                        .inspect_err(|e|  {
+                    async move {
+                        let mut send = send.lock().await;
+                        if let Err(e) = send.send_to(&message_buf, &addr).await {
                             if e.kind() != std::io::ErrorKind::AddrNotAvailable {
                                 warn!("err stun: {:?}", e)
                             }
-                        })
-                        .map(|_e| ())
-                        .into_actor(self),
+                        }
+                    }
+                    .into_actor(self),
                 );
             }
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
-                    self.send
-                        .clone()
-                        .lock_owned()
-                        .then(
-                            move |mut sender| async move { sender.send_to(&message, &addr).await },
-                        )
-                        .inspect_err(|e| warn!("err dtls: {:?}", e))
-                        .map(|_e| ())
-                        .into_actor(self),
+                    async move {
+                        let mut send = send.lock().await;
+                        if let Err(e) = send.send_to(&message, &addr).await {
+                            warn!("err dtls send: {:?}", e)
+                        }
+                    }
+                    .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
-                    self.send
-                        .clone()
-                        .lock_owned()
-                        .then(
-                            move |mut sender| async move { sender.send_to(&message, &addr).await },
-                        )
-                        .inspect_err(|e| warn!("err rtc: {:?}", e))
-                        .map(|_e| ())
-                        .into_actor(self),
+                    async move {
+                        let mut send = send.lock().await;
+                        if let Err(e) = send.send_to(&message, &addr).await {
+                            warn!("err rtcp send: {:?}", e)
+                        }
+                    }
+                    .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("send unknown request"),
