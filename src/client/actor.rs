@@ -127,9 +127,11 @@ impl Handler<WebRtcRequest> for ClientActor {
                         let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
                             if is_rtcp {
                                 srtp.unprotect_rctp(&mut message)?;
+                                drop(state);
                                 None
                             } else {
                                 srtp.unprotect(&mut message)?;
+                                drop(state);
 
                                 let rtp_header = RtpHeader::from_buf(&message)?;
 
@@ -144,8 +146,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                             return Err(ErrorParse::ClientNotReady(addr));
                         };
 
-                        drop(state);
-
                         iter(client_ref.get_receivers().read().await.iter())
                             .map(|(r_addr, recv)| (*r_addr, recv.clone()))
                             .then(|(r_addr, recv)| {
@@ -157,8 +157,10 @@ impl Handler<WebRtcRequest> for ClientActor {
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
                                         if is_rtcp {
                                             srtp.protect_rtcp(&mut message)?;
+                                            drop(state);
                                         } else {
                                             srtp.protect(&mut message)?;
+                                            drop(state);
 
                                             let media = recv.get_media().read().await;
 
@@ -168,6 +170,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                     .and_then(|media| media.get_id(codec))
                                                     .copied()
                                             });
+
+                                            drop(media);
 
                                             if let Some(payload) = payload {
                                                 message[1] =
@@ -199,66 +203,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                     .map(|_| ())
                     .into_actor(self),
                 );
-
-                // if !addresses.is_empty() {
-                //     ctx.spawn(
-                //         client
-                //             .lock_owned()
-                //             .map(move |mut client| {
-                //                 if let ClientState::Connected(_, srtp) = &mut client.state {
-                //                     if is_rtcp {
-                //                         srtp.unprotect_rctp(&mut message)?;
-                //                     } else {
-                //                         srtp.unprotect(&mut message)?;
-                //
-                //                         // let rtp_header = RtpHeader::from_buf(&message)?;
-                //                         //
-                //                         // if rtp_header.payload == 111 {
-                //                         //     return Err(ErrorParse::UnsupportedFormat);
-                //                         // }
-                //                     }
-                //                     Ok(message)
-                //                 } else {
-                //                     Err(ErrorParse::ClientNotReady(addr))
-                //                 }
-                //             })
-                //             .and_then(move |message| {
-                //                 iter(addresses)
-                //                     .then(move |(addr, (client, payload))| {
-                //                         client
-                //                             .lock_owned()
-                //                             .map(move |client| (addr, (client, payload)))
-                //                     })
-                //                     .map(move |(addr, (mut client, payload))| {
-                //                         let mut message = message.clone();
-                //                         if let ClientState::Connected(_, srtp) = &mut client.state {
-                //                             if is_rtcp {
-                //                                 srtp.protect_rtcp(&mut message)?;
-                //                             } else {
-                //                                 srtp.protect(&mut message)?;
-                //                                 message[1] = payload;
-                //                             }
-                //                             Ok((message, addr))
-                //                         } else {
-                //                             Err(ErrorParse::ClientNotReady(addr))
-                //                         }
-                //                     })
-                //                     .try_for_each_concurrent(None, move |(message, addr)| {
-                //                         udp_send
-                //                             .send(WebRtcRequest::Rtc(message, addr))
-                //                             .map_err(ErrorParse::from)
-                //                     })
-                //                     .map_err(ErrorParse::from)
-                //             })
-                //             .inspect_err(move |e| {
-                //                 if !e.should_ignored() {
-                //                     warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
-                //                 }
-                //             })
-                //             .map(move |_| println!("{:?}", start.elapsed()))
-                //             .into_actor(self),
-                //     );
-                // }
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
             WebRtcRequest::Unknown => warn!("client actor unknown request"),
