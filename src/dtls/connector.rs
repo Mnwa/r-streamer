@@ -1,18 +1,22 @@
+use crate::client::clients::ClientSafeRef;
 use crate::{
-    client::clients::{Client, ClientError, ClientState},
+    client::clients::{ClientError, ClientState},
     rtp::srtp::SrtpTransport,
 };
 use log::warn;
 use openssl::ssl::SslAcceptor;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 use tokio_openssl::accept;
 
 pub async fn connect(
-    client: &mut Client,
+    client: ClientSafeRef,
     ssl_acceptor: Arc<SslAcceptor>,
 ) -> Result<(), ClientError> {
-    let ssl_stream = match std::mem::replace(&mut client.state, ClientState::Shutdown) {
+    let mut state = client.get_state().lock_owned().await;
+
+    let ssl_stream = match std::mem::replace(state.deref_mut(), ClientState::Shutdown) {
         ClientState::New(stream) => timeout(Duration::from_secs(10), accept(&ssl_acceptor, stream))
             .await
             .map_err(|_| std::io::ErrorKind::TimedOut)?,
@@ -30,6 +34,6 @@ pub async fn connect(
 
     let srtp_transport = SrtpTransport::new(ssl_stream.ssl())?;
 
-    client.state = ClientState::Connected(ssl_stream, srtp_transport);
+    *state = ClientState::Connected(ssl_stream, srtp_transport);
     Ok(())
 }

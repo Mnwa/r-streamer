@@ -1,12 +1,10 @@
 use crate::sdp::media::MediaList;
 use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
-    dtls::message::DtlsMessage,
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
-use futures::{channel::mpsc::SendError, prelude::*, stream::FusedStream};
-use std::cell::RefCell;
-use std::rc::Rc;
+use futures::channel::mpsc::SendError;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
     error::Error,
@@ -16,22 +14,6 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tokio_openssl::SslStream;
-
-#[derive(Debug)]
-pub struct Client {
-    pub(crate) state: ClientState,
-    pub(crate) channels: ClientSslPacketsChannels,
-}
-
-impl Default for Client {
-    fn default() -> Self {
-        let (stream, channels) = ClientSslPackets::new();
-        Client {
-            state: ClientState::New(stream),
-            channels,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum ClientState {
@@ -86,63 +68,32 @@ impl From<ErrorParse> for ClientError {
 
 pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 
-pub type ClientSafeRef = Rc<RefCell<ClientRef>>;
+pub type ClientSafeRef = Arc<Client>;
 
-pub struct ClientRef {
-    client: Arc<Mutex<Client>>,
+pub struct Client {
+    state: Arc<Mutex<ClientState>>,
     channels: ClientSslPacketsChannels,
-    media: Option<MediaList>,
-    receivers: HashMap<SocketAddr, ClientSafeRef>,
-    is_deleted: bool,
+    media: Arc<Mutex<Option<MediaList>>>,
+    receivers: Arc<Mutex<ClientsRefStorage>>,
+    is_deleted: AtomicBool,
 }
-impl ClientRef {
-    pub fn get_client(&self) -> Arc<Mutex<Client>> {
-        Arc::clone(&self.client)
+impl Client {
+    pub fn get_state(&self) -> Arc<Mutex<ClientState>> {
+        Arc::clone(&self.state)
     }
-    pub fn get_media(&self) -> &Option<MediaList> {
-        &self.media
+    pub fn get_media(&self) -> Arc<Mutex<Option<MediaList>>> {
+        Arc::clone(&self.media)
     }
-    pub fn set_media(&mut self, media: MediaList) {
-        self.media = Some(media)
-    }
-    pub fn add_receiver(&mut self, addr: SocketAddr, client: ClientSafeRef) {
-        self.receivers.insert(addr, client);
+    pub fn get_receivers(&self) -> Arc<Mutex<ClientsRefStorage>> {
+        Arc::clone(&self.receivers)
     }
 
-    pub fn get_receivers(&self) -> &HashMap<SocketAddr, ClientSafeRef> {
-        &self.receivers
-    }
-
-    pub fn clear(&mut self) {
-        self.receivers
-            .retain(|_, client_ref| !client_ref.as_ref().borrow().is_deleted());
-    }
-
-    pub fn delete(&mut self) {
-        self.is_deleted = true
+    pub fn delete(&self) {
+        self.is_deleted.store(true, Ordering::Relaxed)
     }
 
     pub fn is_deleted(&self) -> bool {
-        self.is_deleted
-    }
-
-    pub fn outgoing_stream(&self, addr: SocketAddr) -> impl Stream<Item = DtlsMessage> {
-        let outgoing_reader = Arc::clone(&self.channels.outgoing_reader);
-        futures::stream::unfold(
-            (outgoing_reader, addr),
-            |(outgoing_reader, addr)| async move {
-                let mut reader = outgoing_reader.lock().await;
-                if reader.is_terminated() {
-                    return None;
-                }
-                let message = reader.next().await?;
-                drop(reader);
-                Some((
-                    DtlsMessage::create_outgoing(message, addr),
-                    (outgoing_reader, addr),
-                ))
-            },
-        )
+        self.is_deleted.load(Ordering::Relaxed)
     }
 
     pub fn get_channels(&self) -> &ClientSslPacketsChannels {
@@ -150,21 +101,15 @@ impl ClientRef {
     }
 }
 
-impl From<Client> for ClientRef {
-    fn from(c: Client) -> Self {
-        let channels = c.channels.clone();
-        ClientRef {
-            client: Arc::new(Mutex::new(c)),
-            channels,
-            media: None,
-            receivers: HashMap::new(),
-            is_deleted: false,
-        }
-    }
-}
-
-impl Default for ClientRef {
+impl Default for Client {
     fn default() -> Self {
-        Client::default().into()
+        let (stream, channels) = ClientSslPackets::new();
+        Client {
+            state: Arc::new(Mutex::new(ClientState::New(stream))),
+            channels,
+            media: Default::default(),
+            receivers: Default::default(),
+            is_deleted: AtomicBool::new(false),
+        }
     }
 }

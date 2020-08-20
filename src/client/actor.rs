@@ -19,8 +19,7 @@ use futures::stream::{iter, StreamExt, TryStreamExt};
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use openssl::ssl::SslAcceptor;
-use std::collections::HashMap;
-use std::rc::Rc;
+use std::ops::DerefMut;
 use std::time::Instant;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
@@ -53,16 +52,15 @@ impl Handler<WebRtcRequest> for ClientActor {
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             WebRtcRequest::Dtls(message, addr) => {
-                let client_ref = self.client_storage.entry(addr).or_default();
+                let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
-                ctx.add_message_stream(client_ref.as_ref().borrow().outgoing_stream(addr));
-
-                let incoming_writer =
-                    Arc::clone(&client_ref.as_ref().borrow().get_channels().incoming_writer);
-                let client = client_ref.as_ref().borrow().get_client();
-
                 let self_addr = ctx.address();
+
+                let incoming_writer = Arc::clone(&client_ref.get_channels().incoming_writer);
+                let state = client_ref.get_state();
+
+                ctx.add_message_stream(client_ref.get_channels().outgoing_stream(addr));
 
                 ctx.spawn(
                     async move {
@@ -75,29 +73,30 @@ impl Handler<WebRtcRequest> for ClientActor {
                         }
                         drop(incoming_writer);
 
-                        let mut client_unlocked = client.lock().await;
+                        let mut state = state.lock_owned().await;
 
-                        match client_unlocked.state {
+                        match state.deref_mut() {
                             ClientState::New(_) => {
-                                if let Err(e) = connect(&mut client_unlocked, acceptor).await {
+                                drop(state);
+                                if let Err(e) = connect(client_ref.clone(), acceptor).await {
                                     warn!("connect err: {}", e);
                                     match self_addr.send(DeleteMessage(addr)).await {
                                         Err(e) => warn!("delete err: {}", e),
                                         Ok(is_deleted) => info!("deleted {}", is_deleted),
                                     }
                                 }
+                                println!("connected");
                             }
                             ClientState::Connected(_, _) => {
+                                drop(state);
                                 let mut buf = vec![0; 512];
                                 let result = timeout(
                                     Duration::from_millis(10),
-                                    extract_dtls(&mut client_unlocked, &mut buf),
+                                    extract_dtls(client_ref.clone(), &mut buf),
                                 )
                                 .await
                                 .map_err(|_| std::io::ErrorKind::TimedOut.into())
                                 .and_then(|r| r);
-
-                                drop(client_unlocked);
 
                                 if matches!(result, Ok(0)) {
                                     match self_addr.send(DeleteMessage(addr)).await {
@@ -116,119 +115,151 @@ impl Handler<WebRtcRequest> for ClientActor {
             WebRtcRequest::Rtc(mut message, addr) => {
                 let start = Instant::now();
                 let udp_send = self.udp_send.clone();
-                let client_ref = self.client_storage.entry(addr).or_default();
+                let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
                 let is_rtcp = is_rtcp(&message);
 
-                let addresses = if is_rtcp {
-                    client_ref
-                        .as_ref()
-                        .borrow()
-                        .get_receivers()
-                        .iter()
-                        .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
-                        .map(|(g_addr, client)| {
-                            (*g_addr, (client.as_ref().borrow().get_client(), 0))
-                        })
-                        .collect::<HashMap<_, _>>()
-                } else {
-                    let codec = client_ref
-                        .as_ref()
-                        .borrow()
-                        .get_media()
-                        .as_ref()
-                        .and_then(|mref| Some((mref, RtpHeader::from_buf(&message).ok()?)))
-                        .and_then(|(m, r)| Some((r.marker, m.get_name(&r.payload).cloned()?)));
+                ctx.spawn(
+                    async move {
+                        let rtp_header = RtpHeader::from_buf(&message)?;
 
-                    if let Some((marker, codec_format)) = codec {
-                        client_ref
-                            .as_ref()
-                            .borrow()
-                            .get_receivers()
-                            .iter()
-                            .filter(|(_, client)| !client.as_ref().borrow().is_deleted())
-                            .filter_map(|(g_addr, client_ref)| {
-                                let media = client_ref
+                        let mut state = client_ref.get_state().lock_owned().await;
+                        let media = client_ref.get_media().lock_owned().await;
+
+                        let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
+                            if is_rtcp {
+                                srtp.unprotect_rctp(&mut message)?;
+                                None
+                            } else {
+                                srtp.unprotect(&mut message)?;
+
+                                let rtp_header = RtpHeader::from_buf(&message)?;
+
+                                if rtp_header.payload == 111 {
+                                    return Err(ErrorParse::UnsupportedFormat);
+                                }
+                                media
                                     .as_ref()
-                                    .borrow()
-                                    .get_media()
-                                    .as_ref()
-                                    .and_then(|media| media.get_id(&codec_format))
-                                    .copied()?;
-                                Some((
-                                    *g_addr,
-                                    (
-                                        client_ref.as_ref().borrow().get_client(),
-                                        calculate_payload(marker, media),
-                                    ),
-                                ))
-                            })
-                            .collect::<HashMap<_, _>>()
-                    } else {
-                        return;
-                    }
-                };
+                                    .and_then(|media| media.get_name(&rtp_header.payload))
+                            }
+                        } else {
+                            return Err(ErrorParse::ClientNotReady(addr));
+                        };
 
-                let client = client_ref.as_ref().borrow().get_client();
+                        drop(state);
 
-                if !addresses.is_empty() {
-                    ctx.spawn(
-                        client
-                            .lock_owned()
-                            .map(move |mut client| {
-                                if let ClientState::Connected(_, srtp) = &mut client.state {
-                                    if is_rtcp {
-                                        srtp.unprotect_rctp(&mut message)?;
+                        iter(client_ref.get_receivers().lock_owned().await.iter())
+                            .map(|(r_addr, recv)| (*r_addr, recv.clone()))
+                            .then(|(r_addr, recv)| {
+                                let mut message = message.clone();
+
+                                async move {
+                                    let mut state = recv.get_state().lock_owned().await;
+
+                                    if let ClientState::Connected(_, srtp) = state.deref_mut() {
+                                        if is_rtcp {
+                                            srtp.protect_rtcp(&mut message)?;
+                                        } else {
+                                            srtp.protect(&mut message)?;
+
+                                            let media = recv.get_media().lock_owned().await;
+
+                                            let payload = codec.and_then(|codec| {
+                                                media
+                                                    .as_ref()
+                                                    .and_then(|media| media.get_id(codec))
+                                                    .copied()
+                                            });
+
+                                            if let Some(payload) = payload {
+                                                message[1] =
+                                                    calculate_payload(rtp_header.marker, payload);
+                                            }
+                                        }
+
+                                        Ok((message, r_addr))
                                     } else {
-                                        srtp.unprotect(&mut message)?;
-
-                                        // let rtp_header = RtpHeader::from_buf(&message)?;
-                                        //
-                                        // if rtp_header.payload == 111 {
-                                        //     return Err(ErrorParse::UnsupportedFormat);
-                                        // }
+                                        Err(ErrorParse::ClientNotReady(addr))
                                     }
-                                    Ok(message)
-                                } else {
-                                    Err(ErrorParse::ClientNotReady(addr))
                                 }
                             })
-                            .and_then(move |message| {
-                                iter(addresses)
-                                    .then(move |(addr, (client, payload))| {
-                                        client
-                                            .lock_owned()
-                                            .map(move |client| (addr, (client, payload)))
-                                    })
-                                    .map(move |(addr, (mut client, payload))| {
-                                        let mut message = message.clone();
-                                        if let ClientState::Connected(_, srtp) = &mut client.state {
-                                            if is_rtcp {
-                                                srtp.protect_rtcp(&mut message)?;
-                                            } else {
-                                                srtp.protect(&mut message)?;
-                                                message[1] = payload;
-                                            }
-                                            Ok((message, addr))
-                                        } else {
-                                            Err(ErrorParse::ClientNotReady(addr))
-                                        }
-                                    })
-                                    .try_for_each_concurrent(None, move |(message, addr)| {
-                                        udp_send
-                                            .send(WebRtcRequest::Rtc(message, addr))
-                                            .map_err(ErrorParse::from)
-                                    })
+                            .try_for_each_concurrent(None, move |(message, addr)| {
+                                udp_send
+                                    .send(WebRtcRequest::Rtc(message, addr))
                                     .map_err(ErrorParse::from)
                             })
-                            .inspect_err(move |e| {
-                                if !e.should_ignored() {
-                                    warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
-                                }
-                            })
-                            .map(move |_| println!("{:?}", start.elapsed()))
-                            .into_actor(self),
-                    );
-                }
+                            .await?;
+
+                        Ok(())
+                    }
+                    .inspect(move |_| println!("{:?}", start.elapsed()))
+                    .inspect_err(move |e| {
+                        if !e.should_ignored() {
+                            warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
+                        }
+                    })
+                    .map(|_| ())
+                    .into_actor(self),
+                );
+
+                // if !addresses.is_empty() {
+                //     ctx.spawn(
+                //         client
+                //             .lock_owned()
+                //             .map(move |mut client| {
+                //                 if let ClientState::Connected(_, srtp) = &mut client.state {
+                //                     if is_rtcp {
+                //                         srtp.unprotect_rctp(&mut message)?;
+                //                     } else {
+                //                         srtp.unprotect(&mut message)?;
+                //
+                //                         // let rtp_header = RtpHeader::from_buf(&message)?;
+                //                         //
+                //                         // if rtp_header.payload == 111 {
+                //                         //     return Err(ErrorParse::UnsupportedFormat);
+                //                         // }
+                //                     }
+                //                     Ok(message)
+                //                 } else {
+                //                     Err(ErrorParse::ClientNotReady(addr))
+                //                 }
+                //             })
+                //             .and_then(move |message| {
+                //                 iter(addresses)
+                //                     .then(move |(addr, (client, payload))| {
+                //                         client
+                //                             .lock_owned()
+                //                             .map(move |client| (addr, (client, payload)))
+                //                     })
+                //                     .map(move |(addr, (mut client, payload))| {
+                //                         let mut message = message.clone();
+                //                         if let ClientState::Connected(_, srtp) = &mut client.state {
+                //                             if is_rtcp {
+                //                                 srtp.protect_rtcp(&mut message)?;
+                //                             } else {
+                //                                 srtp.protect(&mut message)?;
+                //                                 message[1] = payload;
+                //                             }
+                //                             Ok((message, addr))
+                //                         } else {
+                //                             Err(ErrorParse::ClientNotReady(addr))
+                //                         }
+                //                     })
+                //                     .try_for_each_concurrent(None, move |(message, addr)| {
+                //                         udp_send
+                //                             .send(WebRtcRequest::Rtc(message, addr))
+                //                             .map_err(ErrorParse::from)
+                //                     })
+                //                     .map_err(ErrorParse::from)
+                //             })
+                //             .inspect_err(move |e| {
+                //                 if !e.should_ignored() {
+                //                     warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
+                //                 }
+                //             })
+                //             .map(move |_| println!("{:?}", start.elapsed()))
+                //             .into_actor(self),
+                //     );
+                // }
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
             WebRtcRequest::Unknown => warn!("client actor unknown request"),
@@ -263,21 +294,25 @@ impl Handler<DeleteMessage> for ClientActor {
     fn handle(
         &mut self,
         DeleteMessage(addr): DeleteMessage,
-        _ctx: &mut Context<Self>,
+        ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.client_storage
-            .remove(&addr)
-            .map(|client| client.borrow_mut().delete())
-            .map(|_| self.groups.remove_sender(addr))
-            .map(|_| {
-                self.client_storage
-                    .iter_mut()
-                    .filter(|(_addr, client_ref)| {
-                        client_ref.as_ref().borrow().get_receivers().is_empty()
-                    })
-                    .for_each(|(_, client_ref)| client_ref.as_ref().borrow_mut().clear())
-            })
-            .is_some()
+        let client = self.client_storage.remove(&addr);
+
+        if let Some(client) = client {
+            self.groups.remove_sender(addr);
+            ctx.spawn(
+                async move {
+                    client.delete();
+                    let mut receivers = client.get_receivers().lock_owned().await;
+                    *receivers = iter(receivers.clone())
+                        .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
+                        .collect()
+                        .await;
+                }
+                .into_actor(self),
+            );
+        }
+        true
     }
 }
 
@@ -287,22 +322,30 @@ impl Handler<GroupId> for ClientActor {
     fn handle(
         &mut self,
         GroupId(group_id, addr): GroupId,
-        _ctx: &mut Context<Self>,
+        ctx: &mut Context<Self>,
     ) -> Self::Result {
         let sender_addr = self.groups.insert_or_get_sender(group_id, addr);
         let result = self
             .client_storage
             .get(&addr)
-            .map(|client_ref| (Rc::clone(client_ref), sender_addr))
+            .cloned()
+            .map(|client_ref| (client_ref, sender_addr))
             .filter(|(_, sender_addr)| *sender_addr != addr)
             .and_then(|(client_ref, sender_addr)| {
                 self.client_storage
                     .get_mut(&sender_addr)
+                    .cloned()
                     .map(|sender_ref| (client_ref, sender_ref))
             });
 
         if let Some((client_ref, sender_ref)) = result {
-            sender_ref.borrow_mut().add_receiver(addr, client_ref);
+            ctx.spawn(
+                async move {
+                    let mut receivers = sender_ref.get_receivers().lock_owned().await;
+                    receivers.insert(addr, client_ref);
+                }
+                .into_actor(self),
+            );
         }
     }
 }
@@ -313,10 +356,16 @@ impl Handler<MediaAddrMessage> for ClientActor {
     fn handle(
         &mut self,
         MediaAddrMessage(addr, media): MediaAddrMessage,
-        _ctx: &mut Context<Self>,
+        ctx: &mut Context<Self>,
     ) -> Self::Result {
-        if let Some(c) = self.client_storage.get_mut(&addr) {
-            c.borrow_mut().set_media(media)
+        if let Some(c) = self.client_storage.get_mut(&addr).cloned() {
+            ctx.spawn(
+                async move {
+                    let mut c_media = c.get_media().lock_owned().await;
+                    *c_media = Some(media);
+                }
+                .into_actor(self),
+            );
         }
     }
 }

@@ -12,6 +12,7 @@ pub fn is_rtcp(buf: &[u8]) -> bool {
     true
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct RtpHeader {
     pub marker: bool,
     pub payload: u8,

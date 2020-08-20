@@ -1,10 +1,12 @@
+use crate::dtls::message::DtlsMessage;
 use bytes::BytesMut;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     lock::Mutex,
     stream::FusedStream,
-    FutureExt, SinkExt, StreamExt,
+    FutureExt, SinkExt, Stream, StreamExt,
 };
+use std::net::SocketAddr;
 use std::{
     fmt::{Debug, Formatter},
     pin::Pin,
@@ -34,6 +36,28 @@ impl Debug for ClientSslPackets {
 pub struct ClientSslPacketsChannels {
     pub incoming_writer: Arc<Mutex<IncomingWriter>>,
     pub outgoing_reader: Arc<Mutex<OutgoingReader>>,
+}
+
+impl ClientSslPacketsChannels {
+    pub fn outgoing_stream(&self, addr: SocketAddr) -> impl Stream<Item = DtlsMessage> {
+        let outgoing_reader = Arc::clone(&self.outgoing_reader);
+        futures::stream::unfold(
+            (outgoing_reader, addr),
+            |(outgoing_reader, addr)| async move {
+                let mut reader = outgoing_reader.lock().await;
+                if reader.is_terminated() {
+                    return None;
+                }
+                let message = reader.next().await?;
+
+                drop(reader);
+                Some((
+                    DtlsMessage::create_outgoing(message, addr),
+                    (outgoing_reader, addr),
+                ))
+            },
+        )
+    }
 }
 
 pub type IncomingWriter = UnboundedSender<BytesMut>;

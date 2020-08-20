@@ -6,10 +6,6 @@ use std::net::SocketAddr;
 #[derive(Debug)]
 pub struct DtlsMessage(MessageType, BytesMut, SocketAddr);
 impl DtlsMessage {
-    #[allow(dead_code)]
-    pub fn create_incoming(message: BytesMut, addr: SocketAddr) -> Self {
-        DtlsMessage(MessageType::Incoming, message, addr)
-    }
     pub fn create_outgoing(message: BytesMut, addr: SocketAddr) -> Self {
         DtlsMessage(MessageType::Outgoing, message, addr)
     }
