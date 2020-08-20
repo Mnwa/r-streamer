@@ -12,7 +12,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]
@@ -71,14 +71,14 @@ pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 pub type ClientSafeRef = Arc<Client>;
 
 pub struct Client {
-    state: RwLock<ClientState>,
+    state: Mutex<ClientState>,
     channels: ClientSslPacketsChannels,
     media: RwLock<Option<MediaList>>,
     receivers: RwLock<ClientsRefStorage>,
     is_deleted: AtomicBool,
 }
 impl Client {
-    pub fn get_state(&self) -> &RwLock<ClientState> {
+    pub fn get_state(&self) -> &Mutex<ClientState> {
         &self.state
     }
     pub fn get_media(&self) -> &RwLock<Option<MediaList>> {
@@ -101,11 +101,14 @@ impl Client {
     }
 }
 
+unsafe impl Send for ClientState {}
+unsafe impl Send for Client {}
+
 impl Default for Client {
     fn default() -> Self {
         let (stream, channels) = ClientSslPackets::new();
         Client {
-            state: RwLock::new(ClientState::New(stream)),
+            state: Mutex::new(ClientState::New(stream)),
             channels,
             media: Default::default(),
             receivers: Default::default(),

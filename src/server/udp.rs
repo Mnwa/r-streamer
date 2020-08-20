@@ -17,6 +17,7 @@ use futures::lock::Mutex;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
+use tokio::runtime::{Builder, Runtime};
 use tokio::{
     net::udp::{RecvHalf, SendHalf},
     net::UdpSocket,
@@ -30,6 +31,7 @@ pub struct UdpRecv {
     data: Arc<ServerData>,
     sessions: SessionsStorage,
     media_sessions: MediaUserStorage,
+    runtime: Arc<Runtime>,
 }
 
 impl Actor for UdpRecv {
@@ -42,6 +44,7 @@ impl UdpRecv {
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
         data: Arc<ServerData>,
+        runtime: Arc<Runtime>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
             let stream = futures::stream::unfold(recv, |mut server| {
@@ -67,6 +70,7 @@ impl UdpRecv {
                 data,
                 sessions: HashMap::new(),
                 media_sessions: HashMap::new(),
+                runtime,
             }
         })
     }
@@ -97,39 +101,51 @@ impl StreamHandler<WebRtcRequest> for UdpRecv {
 
                     if let Some(media) = media {
                         ctx.spawn(
-                            self.dtls
-                                .send(MediaAddrMessage(addr, media))
-                                .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                            self.runtime
+                                .spawn(
+                                    self.dtls
+                                        .send(MediaAddrMessage(addr, media))
+                                        .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                                )
                                 .map(|_e| ())
                                 .into_actor(self),
                         );
                     }
 
                     ctx.spawn(
-                        futures::future::try_join(
-                            self.send.send(WebRtcRequest::Stun(req, addr)),
-                            self.dtls.send(GroupId(group_id, addr)),
-                        )
-                        .inspect_err(|e| warn!("dtls or udp send err: {:?}", e))
-                        .map(|_e| ())
-                        .into_actor(self),
+                        self.runtime
+                            .spawn(
+                                futures::future::try_join(
+                                    self.send.send(WebRtcRequest::Stun(req, addr)),
+                                    self.dtls.send(GroupId(group_id, addr)),
+                                )
+                                .inspect_err(|e| warn!("dtls or udp send err: {:?}", e)),
+                            )
+                            .map(|_e| ())
+                            .into_actor(self),
                     );
                 }
             }
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
-                    self.dtls
-                        .send(WebRtcRequest::Dtls(message, addr))
-                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                    self.runtime
+                        .spawn(
+                            self.dtls
+                                .send(WebRtcRequest::Dtls(message, addr))
+                                .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                        )
                         .map(|_e| ())
                         .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
-                    self.dtls
-                        .send(WebRtcRequest::Rtc(message, addr))
-                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                    self.runtime
+                        .spawn(
+                            self.dtls
+                                .send(WebRtcRequest::Rtc(message, addr))
+                                .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                        )
                         .map(|_e| ())
                         .into_actor(self),
                 );
@@ -186,13 +202,15 @@ impl Handler<MediaUserMessage> for UdpRecv {
 pub struct UdpSend {
     send: Arc<Mutex<SendHalf>>,
     data: Arc<ServerData>,
+    runtime: Arc<Runtime>,
 }
 
 impl UdpSend {
-    pub fn new(send: SendHalf, data: Arc<ServerData>) -> Addr<Self> {
+    pub fn new(send: SendHalf, data: Arc<ServerData>, runtime: Arc<Runtime>) -> Addr<Self> {
         Self::create(|_| Self {
             send: Arc::new(Mutex::new(send)),
             data,
+            runtime,
         })
     }
 }
@@ -231,37 +249,43 @@ impl Handler<WebRtcRequest> for UdpSend {
                 message_buf.truncate(n);
 
                 ctx.spawn(
-                    async move {
-                        let mut send = send.lock().await;
-                        if let Err(e) = send.send_to(&message_buf, &addr).await {
-                            if e.kind() != std::io::ErrorKind::AddrNotAvailable {
-                                warn!("err stun: {:?}", e)
+                    self.runtime
+                        .spawn(async move {
+                            let mut send = send.lock().await;
+                            if let Err(e) = send.send_to(&message_buf, &addr).await {
+                                if e.kind() != std::io::ErrorKind::AddrNotAvailable {
+                                    warn!("err stun: {:?}", e)
+                                }
                             }
-                        }
-                    }
-                    .into_actor(self),
+                        })
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let mut send = send.lock().await;
-                        if let Err(e) = send.send_to(&message, &addr).await {
-                            warn!("err dtls send: {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.runtime
+                        .spawn(async move {
+                            let mut send = send.lock().await;
+                            if let Err(e) = send.send_to(&message, &addr).await {
+                                warn!("err dtls send: {:?}", e)
+                            }
+                        })
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let mut send = send.lock().await;
-                        if let Err(e) = send.send_to(&message, &addr).await {
-                            warn!("err rtcp send: {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.runtime
+                        .spawn(async move {
+                            let mut send = send.lock().await;
+                            if let Err(e) = send.send_to(&message, &addr).await {
+                                warn!("err rtcp send: {:?}", e)
+                            }
+                        })
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("send unknown request"),
@@ -270,15 +294,27 @@ impl Handler<WebRtcRequest> for UdpSend {
 }
 
 pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
+    let runtime = Arc::new(
+        Builder::new()
+            .threaded_scheduler()
+            .enable_io()
+            .build()
+            .unwrap(),
+    );
+
     let server = UdpSocket::bind(addr).await.expect("udp must be up");
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
     let data = Arc::new(ServerData { meta, crypto });
 
     let (recv, send) = server.split();
-    let udp_send = UdpSend::new(send, Arc::clone(&data));
-    let dtls = ClientActor::new(Arc::clone(&data.crypto.ssl_acceptor), udp_send.clone());
-    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data);
+    let udp_send = UdpSend::new(send, Arc::clone(&data), runtime.clone());
+    let dtls = ClientActor::new(
+        Arc::clone(&data.crypto.ssl_acceptor),
+        udp_send.clone(),
+        runtime.clone(),
+    );
+    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data, runtime);
 
     (udp_recv, udp_send)
 }

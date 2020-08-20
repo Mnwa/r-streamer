@@ -22,6 +22,7 @@ use openssl::ssl::SslAcceptor;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 use std::{net::SocketAddr, sync::Arc};
+use tokio::runtime::Runtime;
 use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
@@ -29,15 +30,21 @@ pub struct ClientActor {
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Addr<UdpSend>,
+    runtime: Arc<Runtime>,
 }
 
 impl ClientActor {
-    pub fn new(ssl_acceptor: Arc<SslAcceptor>, udp_send: Addr<UdpSend>) -> Addr<ClientActor> {
+    pub fn new(
+        ssl_acceptor: Arc<SslAcceptor>,
+        udp_send: Addr<UdpSend>,
+        runtime: Arc<Runtime>,
+    ) -> Addr<ClientActor> {
         ClientActor::create(|_| ClientActor {
             ssl_acceptor,
             udp_send,
             client_storage: ClientsRefStorage::new(),
             groups: Group::default(),
+            runtime,
         })
     }
 }
@@ -72,7 +79,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                         }
                         drop(incoming_writer);
 
-                        let state = client_ref.get_state().read().await;
+                        let state = client_ref.get_state().lock().await;
 
                         match state.deref() {
                             ClientState::New(_) => {
@@ -84,7 +91,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         Ok(is_deleted) => info!("deleted {}", is_deleted),
                                     }
                                 }
-                                println!("connected");
                             }
                             ClientState::Connected(_, _) => {
                                 drop(state);
@@ -118,90 +124,98 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let is_rtcp = is_rtcp(&message);
 
                 ctx.spawn(
-                    async move {
-                        let rtp_header = RtpHeader::from_buf(&message)?;
-
-                        let mut state = client_ref.get_state().write().await;
-                        let media = client_ref.get_media().read().await;
-
-                        let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
-                            if is_rtcp {
-                                srtp.unprotect_rctp(&mut message)?;
-                                drop(state);
-                                None
-                            } else {
-                                srtp.unprotect(&mut message)?;
-                                drop(state);
-
+                    self.runtime
+                        .spawn(
+                            async move {
                                 let rtp_header = RtpHeader::from_buf(&message)?;
 
-                                if rtp_header.payload == 111 {
-                                    return Err(ErrorParse::UnsupportedFormat);
-                                }
-                                media
-                                    .as_ref()
-                                    .and_then(|media| media.get_name(&rtp_header.payload))
-                            }
-                        } else {
-                            return Err(ErrorParse::ClientNotReady(addr));
-                        };
+                                let mut state = client_ref.get_state().lock().await;
+                                let media = client_ref.get_media().read().await;
 
-                        iter(client_ref.get_receivers().read().await.iter())
-                            .map(|(r_addr, recv)| (*r_addr, recv.clone()))
-                            .then(|(r_addr, recv)| {
-                                let mut message = message.clone();
-
-                                async move {
-                                    let mut state = recv.get_state().write().await;
-
+                                let codec =
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
                                         if is_rtcp {
-                                            srtp.protect_rtcp(&mut message)?;
+                                            srtp.unprotect_rctp(&mut message)?;
                                             drop(state);
+                                            None
                                         } else {
-                                            srtp.protect(&mut message)?;
+                                            srtp.unprotect(&mut message)?;
                                             drop(state);
 
-                                            let media = recv.get_media().read().await;
+                                            let rtp_header = RtpHeader::from_buf(&message)?;
 
-                                            let payload = codec.and_then(|codec| {
-                                                media
-                                                    .as_ref()
-                                                    .and_then(|media| media.get_id(codec))
-                                                    .copied()
-                                            });
+                                            if rtp_header.payload == 111 {
+                                                return Err(ErrorParse::UnsupportedFormat);
+                                            }
+                                            media.as_ref().and_then(|media| {
+                                                media.get_name(&rtp_header.payload)
+                                            })
+                                        }
+                                    } else {
+                                        return Err(ErrorParse::ClientNotReady(addr));
+                                    };
 
-                                            drop(media);
+                                iter(client_ref.get_receivers().read().await.iter())
+                                    .map(|(r_addr, recv)| (*r_addr, recv.clone()))
+                                    .then(|(r_addr, recv)| {
+                                        let mut message = message.clone();
 
-                                            if let Some(payload) = payload {
-                                                message[1] =
-                                                    calculate_payload(rtp_header.marker, payload);
+                                        async move {
+                                            let mut state = recv.get_state().lock().await;
+
+                                            if let ClientState::Connected(_, srtp) =
+                                                state.deref_mut()
+                                            {
+                                                if is_rtcp {
+                                                    srtp.protect_rtcp(&mut message)?;
+                                                    drop(state);
+                                                } else {
+                                                    srtp.protect(&mut message)?;
+                                                    drop(state);
+
+                                                    let media = recv.get_media().read().await;
+
+                                                    let payload = codec.and_then(|codec| {
+                                                        media
+                                                            .as_ref()
+                                                            .and_then(|media| media.get_id(codec))
+                                                            .copied()
+                                                    });
+
+                                                    drop(media);
+
+                                                    if let Some(payload) = payload {
+                                                        message[1] = calculate_payload(
+                                                            rtp_header.marker,
+                                                            payload,
+                                                        );
+                                                    }
+                                                }
+
+                                                Ok((message, r_addr))
+                                            } else {
+                                                Err(ErrorParse::ClientNotReady(addr))
                                             }
                                         }
+                                    })
+                                    .try_for_each_concurrent(None, move |(message, addr)| {
+                                        udp_send
+                                            .send(WebRtcRequest::Rtc(message, addr))
+                                            .map_err(ErrorParse::from)
+                                    })
+                                    .await?;
 
-                                        Ok((message, r_addr))
-                                    } else {
-                                        Err(ErrorParse::ClientNotReady(addr))
-                                    }
+                                Ok(())
+                            }
+                            .inspect(move |_| println!("{:?}", start.elapsed()))
+                            .inspect_err(move |e| {
+                                if !e.should_ignored() {
+                                    warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
                                 }
-                            })
-                            .try_for_each_concurrent(None, move |(message, addr)| {
-                                udp_send
-                                    .send(WebRtcRequest::Rtc(message, addr))
-                                    .map_err(ErrorParse::from)
-                            })
-                            .await?;
-
-                        Ok(())
-                    }
-                    .inspect(move |_| println!("{:?}", start.elapsed()))
-                    .inspect_err(move |e| {
-                        if !e.should_ignored() {
-                            warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
-                        }
-                    })
-                    .map(|_| ())
-                    .into_actor(self),
+                            }),
+                        )
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),

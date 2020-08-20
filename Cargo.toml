@@ -10,7 +10,7 @@ edition = "2018"
 [dependencies]
 env_logger = "0.7"
 futures = { version = "0.3" }
-tokio = { version = "0.2", features = ["macros", "udp", "time"] }
+tokio = { version = "0.2", features = ["macros", "udp", "time", "rt-threaded"] }
 log = "0.4"
 webrtc-sdp = "0.3"
 rand = "0.7"

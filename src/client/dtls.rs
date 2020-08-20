@@ -16,7 +16,7 @@ pub async fn push_dtls(
 }
 
 pub async fn extract_dtls(client: ClientSafeRef, buf: &mut [u8]) -> Result<usize, ClientError> {
-    if let ClientState::Connected(ssl_stream, _) = client.get_state().write().await.deref_mut() {
+    if let ClientState::Connected(ssl_stream, _) = client.get_state().lock().await.deref_mut() {
         return ssl_stream.read(buf).await.map_err(|e| e.into());
     }
     Err(ClientError::NotConnected)
@@ -24,7 +24,7 @@ pub async fn extract_dtls(client: ClientSafeRef, buf: &mut [u8]) -> Result<usize
 
 #[allow(dead_code)]
 pub async fn write_message(client: ClientSafeRef, buf: &mut [u8]) -> Result<usize, ClientError> {
-    if let ClientState::Connected(ssl_stream, _) = client.get_state().write().await.deref_mut() {
+    if let ClientState::Connected(ssl_stream, _) = client.get_state().lock().await.deref_mut() {
         return ssl_stream.write(buf).await.map_err(|e| e.into());
     }
     Err(ClientError::NotConnected)
