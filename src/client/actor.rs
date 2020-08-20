@@ -58,7 +58,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                 let self_addr = ctx.address();
 
                 let incoming_writer = Arc::clone(&client_ref.get_channels().incoming_writer);
-                let state = client_ref.get_state();
 
                 ctx.add_message_stream(client_ref.get_channels().outgoing_stream(addr));
 
@@ -73,7 +72,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                         }
                         drop(incoming_writer);
 
-                        let mut state = state.lock_owned().await;
+                        let mut state = client_ref.get_state().lock().await;
 
                         match state.deref_mut() {
                             ClientState::New(_) => {
@@ -122,8 +121,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                     async move {
                         let rtp_header = RtpHeader::from_buf(&message)?;
 
-                        let mut state = client_ref.get_state().lock_owned().await;
-                        let media = client_ref.get_media().lock_owned().await;
+                        let mut state = client_ref.get_state().lock().await;
+                        let media = client_ref.get_media().lock().await;
 
                         let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
                             if is_rtcp {
@@ -147,13 +146,13 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         drop(state);
 
-                        iter(client_ref.get_receivers().lock_owned().await.iter())
+                        iter(client_ref.get_receivers().lock().await.iter())
                             .map(|(r_addr, recv)| (*r_addr, recv.clone()))
                             .then(|(r_addr, recv)| {
                                 let mut message = message.clone();
 
                                 async move {
-                                    let mut state = recv.get_state().lock_owned().await;
+                                    let mut state = recv.get_state().lock().await;
 
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
                                         if is_rtcp {
@@ -161,7 +160,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         } else {
                                             srtp.protect(&mut message)?;
 
-                                            let media = recv.get_media().lock_owned().await;
+                                            let media = recv.get_media().lock().await;
 
                                             let payload = codec.and_then(|codec| {
                                                 media
@@ -303,7 +302,7 @@ impl Handler<DeleteMessage> for ClientActor {
             ctx.spawn(
                 async move {
                     client.delete();
-                    let mut receivers = client.get_receivers().lock_owned().await;
+                    let mut receivers = client.get_receivers().lock().await;
                     *receivers = iter(receivers.clone())
                         .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
                         .collect()
@@ -341,7 +340,7 @@ impl Handler<GroupId> for ClientActor {
         if let Some((client_ref, sender_ref)) = result {
             ctx.spawn(
                 async move {
-                    let mut receivers = sender_ref.get_receivers().lock_owned().await;
+                    let mut receivers = sender_ref.get_receivers().lock().await;
                     receivers.insert(addr, client_ref);
                 }
                 .into_actor(self),
@@ -361,7 +360,7 @@ impl Handler<MediaAddrMessage> for ClientActor {
         if let Some(c) = self.client_storage.get_mut(&addr).cloned() {
             ctx.spawn(
                 async move {
-                    let mut c_media = c.get_media().lock_owned().await;
+                    let mut c_media = c.get_media().lock().await;
                     *c_media = Some(media);
                 }
                 .into_actor(self),

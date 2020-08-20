@@ -4,6 +4,7 @@ use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
 use futures::channel::mpsc::SendError;
+use futures::lock::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
@@ -12,7 +13,6 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
-use tokio::sync::Mutex;
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]
@@ -71,21 +71,21 @@ pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 pub type ClientSafeRef = Arc<Client>;
 
 pub struct Client {
-    state: Arc<Mutex<ClientState>>,
+    state: Mutex<ClientState>,
     channels: ClientSslPacketsChannels,
-    media: Arc<Mutex<Option<MediaList>>>,
-    receivers: Arc<Mutex<ClientsRefStorage>>,
+    media: Mutex<Option<MediaList>>,
+    receivers: Mutex<ClientsRefStorage>,
     is_deleted: AtomicBool,
 }
 impl Client {
-    pub fn get_state(&self) -> Arc<Mutex<ClientState>> {
-        Arc::clone(&self.state)
+    pub fn get_state(&self) -> &Mutex<ClientState> {
+        &self.state
     }
-    pub fn get_media(&self) -> Arc<Mutex<Option<MediaList>>> {
-        Arc::clone(&self.media)
+    pub fn get_media(&self) -> &Mutex<Option<MediaList>> {
+        &self.media
     }
-    pub fn get_receivers(&self) -> Arc<Mutex<ClientsRefStorage>> {
-        Arc::clone(&self.receivers)
+    pub fn get_receivers(&self) -> &Mutex<ClientsRefStorage> {
+        &self.receivers
     }
 
     pub fn delete(&self) {
@@ -105,7 +105,7 @@ impl Default for Client {
     fn default() -> Self {
         let (stream, channels) = ClientSslPackets::new();
         Client {
-            state: Arc::new(Mutex::new(ClientState::New(stream))),
+            state: Mutex::new(ClientState::New(stream)),
             channels,
             media: Default::default(),
             receivers: Default::default(),
