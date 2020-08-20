@@ -39,12 +39,15 @@ impl ClientActor {
         udp_send: Addr<UdpSend>,
         runtime: Arc<Runtime>,
     ) -> Addr<ClientActor> {
-        ClientActor::create(|_| ClientActor {
-            ssl_acceptor,
-            udp_send,
-            client_storage: ClientsRefStorage::new(),
-            groups: Group::default(),
-            runtime,
+        ClientActor::create(|ctx| {
+            ctx.set_mailbox_capacity(1024);
+            ClientActor {
+                ssl_acceptor,
+                udp_send,
+                client_storage: ClientsRefStorage::new(),
+                groups: Group::default(),
+                runtime,
+            }
         })
     }
 }

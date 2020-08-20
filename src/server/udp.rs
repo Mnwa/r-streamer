@@ -13,10 +13,11 @@ use crate::{
 use actix::prelude::*;
 use actix_web::web::BytesMut;
 use futures::future::ready;
-use futures::lock::Mutex;
+use futures::task::Poll;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
+use tokio::macros::support::Pin;
 use tokio::runtime::{Builder, Runtime};
 use tokio::{
     net::udp::{RecvHalf, SendHalf},
@@ -47,6 +48,8 @@ impl UdpRecv {
         runtime: Arc<Runtime>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
+            ctx.set_mailbox_capacity(1024);
+
             let stream = futures::stream::unfold(recv, |mut server| {
                 ready(BytesMut::with_capacity(1200))
                     .then(|mut message| async move {
@@ -200,17 +203,20 @@ impl Handler<MediaUserMessage> for UdpRecv {
 }
 
 pub struct UdpSend {
-    send: Arc<Mutex<SendHalf>>,
+    send: Arc<SendHalf>,
     data: Arc<ServerData>,
     runtime: Arc<Runtime>,
 }
 
 impl UdpSend {
     pub fn new(send: SendHalf, data: Arc<ServerData>, runtime: Arc<Runtime>) -> Addr<Self> {
-        Self::create(|_| Self {
-            send: Arc::new(Mutex::new(send)),
-            data,
-            runtime,
+        Self::create(|ctx| {
+            ctx.set_mailbox_capacity(1024);
+            Self {
+                send: Arc::new(send),
+                data,
+                runtime,
+            }
         })
     }
 }
@@ -230,7 +236,9 @@ impl Handler<WebRtcRequest> for UdpSend {
         let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
-                let mut message_buf: Vec<u8> = vec![0; 1458];
+                let mut message_buf: BytesMut = BytesMut::with_capacity(1200);
+                unsafe { message_buf.set_len(1200) }
+
                 let n = write_stun_success_response(
                     req.transaction_id,
                     addr,
@@ -250,14 +258,11 @@ impl Handler<WebRtcRequest> for UdpSend {
 
                 ctx.spawn(
                     self.runtime
-                        .spawn(async move {
-                            let mut send = send.lock().await;
-                            if let Err(e) = send.send_to(&message_buf, &addr).await {
-                                if e.kind() != std::io::ErrorKind::AddrNotAvailable {
-                                    warn!("err stun: {:?}", e)
-                                }
+                        .spawn(UdpMassSender(send, addr, message_buf).inspect_err(|e| {
+                            if e.kind() != std::io::ErrorKind::AddrNotAvailable {
+                                warn!("err stun: {:?}", e)
                             }
-                        })
+                        }))
                         .map(|_| ())
                         .into_actor(self),
                 );
@@ -265,12 +270,10 @@ impl Handler<WebRtcRequest> for UdpSend {
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
                     self.runtime
-                        .spawn(async move {
-                            let mut send = send.lock().await;
-                            if let Err(e) = send.send_to(&message, &addr).await {
-                                warn!("err dtls send: {:?}", e)
-                            }
-                        })
+                        .spawn(
+                            UdpMassSender(send, addr, message)
+                                .inspect_err(|e| warn!("err dtls send: {:?}", e)),
+                        )
                         .map(|_| ())
                         .into_actor(self),
                 );
@@ -278,12 +281,10 @@ impl Handler<WebRtcRequest> for UdpSend {
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
                     self.runtime
-                        .spawn(async move {
-                            let mut send = send.lock().await;
-                            if let Err(e) = send.send_to(&message, &addr).await {
-                                warn!("err rtcp send: {:?}", e)
-                            }
-                        })
+                        .spawn(
+                            UdpMassSender(send, addr, message)
+                                .inspect_err(|e| warn!("err rtc send: {:?}", e)),
+                        )
                         .map(|_| ())
                         .into_actor(self),
                 );
@@ -361,4 +362,14 @@ struct ClearData;
 
 impl Message for ClearData {
     type Result = ();
+}
+
+struct UdpMassSender(Arc<SendHalf>, SocketAddr, BytesMut);
+
+impl Future for UdpMassSender {
+    type Output = std::io::Result<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        self.0.as_ref().as_ref().poll_send_to(cx, &self.2, &self.1)
+    }
 }
