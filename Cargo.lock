@@ -1436,7 +1436,6 @@ dependencies = [
  "actix",
  "actix-files",
  "actix-rt",
- "actix-threadpool",
  "actix-web",
  "byteorder",
  "bytes",
