@@ -1445,7 +1445,6 @@ dependencies = [
  "actix-web",
  "bimap",
  "byteorder",
- "bytes",
  "crc32fast",
  "env_logger",
  "futures",
