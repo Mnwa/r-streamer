@@ -5,6 +5,9 @@ mod sdp;
 mod server;
 mod stun;
 
+#[global_allocator]
+static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
+
 use crate::{
     sdp::generate_streamer_response,
     server::udp::{create_udp, UdpRecv},
