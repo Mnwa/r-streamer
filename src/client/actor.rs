@@ -145,8 +145,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                                             srtp.unprotect(&mut message)?;
                                             drop(state);
 
-                                            let rtp_header = RtpHeader::from_buf(&message)?;
-
                                             if rtp_header.payload == 111 {
                                                 return Err(ErrorParse::UnsupportedFormat);
                                             }
