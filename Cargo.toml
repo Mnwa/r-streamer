@@ -26,4 +26,4 @@ actix-web = "2"
 actix-files = "0.2"
 smallvec = "1.4"
 bimap = "0.5"
-rpmalloc = { version = "0.2.0", features = ["unlimited_cache", "unlimited_thread_cache"] }
+rpmalloc = { version = "0.2.0", features = ["unlimited_cache", "unlimited_thread_cache", "unlimited_global_cache"] }
