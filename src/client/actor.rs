@@ -132,8 +132,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                             async move {
                                 let rtp_header = RtpHeader::from_buf(&message)?;
 
-                                let mut state = client_ref.get_state().lock().await;
                                 let media = client_ref.get_media().read().await;
+                                let mut state = client_ref.get_state().lock().await;
 
                                 let codec =
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
