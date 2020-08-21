@@ -15,7 +15,7 @@ use futures::future::ready;
 use futures::task::Poll;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
 use tokio::macros::support::Pin;
 use tokio::runtime::{Builder, Runtime};
@@ -51,8 +51,8 @@ impl UdpRecv {
             ctx.set_mailbox_capacity(1024);
 
             let stream = futures::stream::unfold(recv, |mut server| {
-                ready(smallvec![0; 1200])
-                    .then(|mut message: DataPacket| async move {
+                ready(DataPacket::with_capacity(1200))
+                    .then(|mut message| async move {
                         unsafe { message.set_len(1200) }
                         server.recv_from(&mut message).await.map(|(n, addr)| {
                             message.truncate(n);
@@ -236,7 +236,8 @@ impl Handler<WebRtcRequest> for UdpSend {
         let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
-                let mut message_buf: DataPacket = smallvec![0; 1200];
+                let mut message_buf: DataPacket = DataPacket::with_capacity(1200);
+                unsafe { message_buf.set_len(1200) }
 
                 let n = write_stun_success_response(
                     req.transaction_id,
