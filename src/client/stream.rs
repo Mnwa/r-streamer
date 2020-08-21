@@ -1,5 +1,5 @@
 use crate::dtls::message::DtlsMessage;
-use bytes::BytesMut;
+use crate::server::udp::DataPacket;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     lock::Mutex,
@@ -60,11 +60,11 @@ impl ClientSslPacketsChannels {
     }
 }
 
-pub type IncomingWriter = UnboundedSender<BytesMut>;
-pub type IncomingReader = UnboundedReceiver<BytesMut>;
+pub type IncomingWriter = UnboundedSender<DataPacket>;
+pub type IncomingReader = UnboundedReceiver<DataPacket>;
 
-pub type OutgoingReader = UnboundedReceiver<BytesMut>;
-pub type OutgoingWriter = UnboundedSender<BytesMut>;
+pub type OutgoingReader = UnboundedReceiver<DataPacket>;
+pub type OutgoingWriter = UnboundedSender<DataPacket>;
 
 impl ClientSslPackets {
     pub fn new() -> (ClientSslPackets, ClientSslPacketsChannels) {
@@ -120,7 +120,7 @@ impl AsyncWrite for ClientSslPackets {
         match self
             .get_mut()
             .outgoing_writer
-            .send(BytesMut::from(buf))
+            .send(DataPacket::from_slice(buf))
             .poll_unpin(cx)
         {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),

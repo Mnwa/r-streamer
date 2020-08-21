@@ -11,11 +11,11 @@ use crate::{
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
 use actix::prelude::*;
-use actix_web::web::BytesMut;
 use futures::future::ready;
 use futures::task::Poll;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
+use smallvec::SmallVec;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
 use tokio::macros::support::Pin;
 use tokio::runtime::{Builder, Runtime};
@@ -51,7 +51,7 @@ impl UdpRecv {
             ctx.set_mailbox_capacity(1024);
 
             let stream = futures::stream::unfold(recv, |mut server| {
-                ready(BytesMut::with_capacity(1200))
+                ready(DataPacket::with_capacity(1200))
                     .then(|mut message| async move {
                         unsafe { message.set_len(1200) }
                         server.recv_from(&mut message).await.map(|(n, addr)| {
@@ -236,7 +236,7 @@ impl Handler<WebRtcRequest> for UdpSend {
         let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
-                let mut message_buf: BytesMut = BytesMut::with_capacity(1200);
+                let mut message_buf: DataPacket = DataPacket::with_capacity(1200);
                 unsafe { message_buf.set_len(1200) }
 
                 let n = write_stun_success_response(
@@ -279,6 +279,7 @@ impl Handler<WebRtcRequest> for UdpSend {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
+                println!("{} {}", message.spilled(), message.len());
                 ctx.spawn(
                     self.runtime
                         .spawn(
@@ -323,13 +324,13 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
 #[derive(Debug, Clone)]
 pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
-    Dtls(BytesMut, SocketAddr),
-    Rtc(BytesMut, SocketAddr),
+    Dtls(DataPacket, SocketAddr),
+    Rtc(DataPacket, SocketAddr),
     Unknown,
 }
 
-impl From<(BytesMut, SocketAddr)> for WebRtcRequest {
-    fn from((buf, addr): (BytesMut, SocketAddr)) -> Self {
+impl From<(DataPacket, SocketAddr)> for WebRtcRequest {
+    fn from((buf, addr): (DataPacket, SocketAddr)) -> Self {
         if RtpHeader::is_rtp_header(&buf) {
             return WebRtcRequest::Rtc(buf, addr);
         }
@@ -364,7 +365,7 @@ impl Message for ClearData {
     type Result = ();
 }
 
-struct UdpMassSender(Arc<SendHalf>, SocketAddr, BytesMut);
+struct UdpMassSender(Arc<SendHalf>, SocketAddr, DataPacket);
 
 impl Future for UdpMassSender {
     type Output = std::io::Result<usize>;
@@ -373,3 +374,5 @@ impl Future for UdpMassSender {
         self.0.as_ref().as_ref().poll_send_to(cx, &self.2, &self.1)
     }
 }
+
+pub type DataPacket = SmallVec<[u8; 2048]>;

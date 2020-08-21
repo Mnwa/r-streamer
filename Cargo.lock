@@ -1446,6 +1446,7 @@ dependencies = [
  "openssl",
  "openssl-sys",
  "rand",
+ "smallvec",
  "srtp",
  "tokio",
  "tokio-openssl",
@@ -1643,10 +1644,9 @@ dependencies = [
 [[package]]
 name = "srtp"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc47333b90eff521f9653dcd4e9d91a566d31cafbb4eff35b4da00271f07317"
+source = "git+https://github.com/Mnwa/srtp#6655fd232d2b903cf4c07e6325f13296aa74bd95"
 dependencies = [
- "bytes",
+ "smallvec",
  "srtp2-sys",
 ]
 

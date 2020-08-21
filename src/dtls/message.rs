@@ -1,12 +1,11 @@
-use crate::server::udp::WebRtcRequest;
+use crate::server::udp::{DataPacket, WebRtcRequest};
 use actix::Message;
-use bytes::BytesMut;
 use std::net::SocketAddr;
 
 #[derive(Debug)]
-pub struct DtlsMessage(MessageType, BytesMut, SocketAddr);
+pub struct DtlsMessage(MessageType, DataPacket, SocketAddr);
 impl DtlsMessage {
-    pub fn create_outgoing(message: BytesMut, addr: SocketAddr) -> Self {
+    pub fn create_outgoing(message: DataPacket, addr: SocketAddr) -> Self {
         DtlsMessage(MessageType::Outgoing, message, addr)
     }
 

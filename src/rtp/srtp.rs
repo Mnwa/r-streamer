@@ -1,5 +1,5 @@
+use crate::server::udp::DataPacket;
 use actix::MailboxError;
-use bytes::BytesMut;
 use openssl::{error::ErrorStack, ssl::SslRef};
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
 use std::net::SocketAddr;
@@ -42,19 +42,19 @@ impl SrtpTransport {
         })
     }
 
-    pub fn protect(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+    pub fn protect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.server.protect(buf).map_err(|e| e.into())
     }
 
-    pub fn protect_rtcp(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+    pub fn protect_rtcp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.server.protect_rtcp(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+    pub fn unprotect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.client.unprotect(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect_rctp(&mut self, buf: &mut BytesMut) -> Result<(), ErrorParse> {
+    pub fn unprotect_rctp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.client.unprotect_rtcp(buf).map_err(|e| e.into())
     }
 }

@@ -1,16 +1,16 @@
 use crate::client::clients::ClientSafeRef;
+use crate::server::udp::DataPacket;
 use crate::{
     client::clients::{ClientError, ClientState},
     client::stream::IncomingWriter,
 };
-use bytes::BytesMut;
 use futures::prelude::*;
 use std::ops::DerefMut;
 use tokio::prelude::*;
 
 pub async fn push_dtls(
     incoming_writer: &mut IncomingWriter,
-    buf: BytesMut,
+    buf: DataPacket,
 ) -> Result<(), ClientError> {
     incoming_writer.send(buf).await.map_err(|e| e.into())
 }
