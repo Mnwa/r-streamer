@@ -132,8 +132,11 @@ impl Handler<WebRtcRequest> for ClientActor {
                             async move {
                                 let rtp_header = RtpHeader::from_buf(&message)?;
 
-                                let media = client_ref.get_media().read().await;
-                                let mut state = client_ref.get_state().lock().await;
+                                let (mut state, media) = futures::future::join(
+                                    client_ref.get_state().lock(),
+                                    client_ref.get_media().read(),
+                                )
+                                .await;
 
                                 let codec =
                                     if let ClientState::Connected(_, srtp) = state.deref_mut() {
@@ -156,13 +159,16 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         return Err(ErrorParse::ClientNotReady(addr));
                                     };
 
-                                iter(client_ref.get_receivers().read().await.iter())
-                                    .map(|(r_addr, recv)| (*r_addr, recv.clone()))
+                                iter(client_ref.get_receivers().read().await.clone())
                                     .then(|(r_addr, recv)| {
                                         let mut message = message.clone();
 
                                         async move {
-                                            let mut state = recv.get_state().lock().await;
+                                            let (mut state, media) = futures::future::join(
+                                                recv.get_state().lock(),
+                                                recv.get_media().read(),
+                                            )
+                                            .await;
 
                                             if let ClientState::Connected(_, srtp) =
                                                 state.deref_mut()
@@ -174,16 +180,12 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                     srtp.protect(&mut message)?;
                                                     drop(state);
 
-                                                    let media = recv.get_media().read().await;
-
                                                     let payload = codec.and_then(|codec| {
                                                         media
                                                             .as_ref()
                                                             .and_then(|media| media.get_id(codec))
                                                             .copied()
                                                     });
-
-                                                    drop(media);
 
                                                     if let Some(payload) = payload {
                                                         message[1] = calculate_payload(
