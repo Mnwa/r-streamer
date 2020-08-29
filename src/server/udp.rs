@@ -11,9 +11,8 @@ use crate::{
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
 use actix::prelude::*;
-use futures::future::ready;
 use futures::task::Poll;
-use futures::{FutureExt, TryFutureExt};
+use futures::TryFutureExt;
 use log::{info, warn};
 use smallvec::SmallVec;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
@@ -41,7 +40,7 @@ impl Actor for UdpRecv {
 
 impl UdpRecv {
     pub fn new(
-        recv: RecvHalf,
+        mut recv: RecvHalf,
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
         data: Arc<ServerData>,
@@ -50,21 +49,29 @@ impl UdpRecv {
         UdpRecv::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
 
-            let stream = futures::stream::unfold(recv, |mut server| {
-                ready(DataPacket::with_capacity(1200))
-                    .then(|mut message| async move {
-                        unsafe { message.set_len(1200) }
-                        server.recv_from(&mut message).await.map(|(n, addr)| {
-                            message.truncate(n);
-                            ((message, addr), server)
-                        })
-                    })
-                    .inspect_err(|err| warn!("could not receive UDP message: {}", err))
-                    .map(|r| r.ok())
-            })
-            .map(WebRtcRequest::from);
+            let self_addr = ctx.address();
 
-            ctx.add_stream(stream);
+            runtime.spawn(async move {
+                loop {
+                    let mut message = DataPacket::with_capacity(1200);
+                    unsafe { message.set_len(1200) }
+
+                    match recv.recv_from(&mut message).await {
+                        Ok((n, addr)) => {
+                            message.truncate(n);
+                            let message = WebRtcRequest::from((message, addr));
+
+                            if let Err(err) = self_addr.send(message).await {
+                                warn!("could not receive UDP message: {}", err);
+                            }
+                        }
+                        Err(err) => {
+                            warn!("could not receive UDP message: {}", err);
+                        }
+                    }
+                }
+            });
+
             ctx.add_stream(tokio::time::interval(Duration::from_secs(60)).map(|_| ClearData));
 
             UdpRecv {
@@ -87,7 +94,9 @@ impl Handler<ServerDataRequest> for UdpRecv {
     }
 }
 
-impl StreamHandler<WebRtcRequest> for UdpRecv {
+impl Handler<WebRtcRequest> for UdpRecv {
+    type Result = ();
+
     fn handle(&mut self, item: WebRtcRequest, _ctx: &mut Context<Self>) {
         match item {
             WebRtcRequest::Stun(req, addr) => {
