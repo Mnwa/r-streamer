@@ -22,6 +22,23 @@ pub enum ClientState {
     Shutdown,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum ClientStateStatus {
+    New,
+    Connected,
+    Shutdown,
+}
+
+impl ClientState {
+    pub fn get_status(&self) -> ClientStateStatus {
+        match self {
+            ClientState::New(_) => ClientStateStatus::New,
+            ClientState::Connected(_, _) => ClientStateStatus::Connected,
+            ClientState::Shutdown => ClientStateStatus::Shutdown,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ClientError {
     Receive(SendError),
