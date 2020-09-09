@@ -3,6 +3,7 @@ use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
+use fast_async_mutex::{mutex_ordered::OrderedMutex, rwlock_ordered::OrderedRwLock};
 use futures::channel::mpsc::SendError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -12,7 +13,6 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
-use tokio::sync::{Mutex, RwLock};
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]
@@ -88,20 +88,20 @@ pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 pub type ClientSafeRef = Arc<Client>;
 
 pub struct Client {
-    state: Mutex<ClientState>,
+    state: OrderedMutex<ClientState>,
     channels: ClientSslPacketsChannels,
-    media: RwLock<Option<MediaList>>,
-    receivers: RwLock<ClientsRefStorage>,
+    media: OrderedRwLock<Option<MediaList>>,
+    receivers: OrderedRwLock<ClientsRefStorage>,
     is_deleted: AtomicBool,
 }
 impl Client {
-    pub fn get_state(&self) -> &Mutex<ClientState> {
+    pub fn get_state(&self) -> &OrderedMutex<ClientState> {
         &self.state
     }
-    pub fn get_media(&self) -> &RwLock<Option<MediaList>> {
+    pub fn get_media(&self) -> &OrderedRwLock<Option<MediaList>> {
         &self.media
     }
-    pub fn get_receivers(&self) -> &RwLock<ClientsRefStorage> {
+    pub fn get_receivers(&self) -> &OrderedRwLock<ClientsRefStorage> {
         &self.receivers
     }
 
@@ -125,10 +125,10 @@ impl Default for Client {
     fn default() -> Self {
         let (stream, channels) = ClientSslPackets::new();
         Client {
-            state: Mutex::new(ClientState::New(stream)),
+            state: OrderedMutex::new(ClientState::New(stream)),
             channels,
-            media: Default::default(),
-            receivers: Default::default(),
+            media: OrderedRwLock::new(Default::default()),
+            receivers: OrderedRwLock::new(Default::default()),
             is_deleted: AtomicBool::new(false),
         }
     }

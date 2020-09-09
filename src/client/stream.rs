@@ -1,8 +1,8 @@
 use crate::dtls::message::DtlsMessage;
 use crate::server::udp::DataPacket;
+use fast_async_mutex::mutex::Mutex;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    lock::Mutex,
     stream::FusedStream,
     FutureExt, SinkExt, Stream, StreamExt,
 };
