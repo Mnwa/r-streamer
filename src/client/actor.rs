@@ -2,6 +2,7 @@ use crate::client::clients::ClientStateStatus;
 use crate::rtp::core::RtpHeader;
 use crate::rtp::srtp::ErrorParse;
 use crate::sdp::media::MediaAddrMessage;
+use crate::server::udp::DataPacket;
 use crate::{
     client::{
         clients::{ClientState, ClientsRefStorage},
@@ -16,6 +17,7 @@ use crate::{
     server::udp::{UdpSend, WebRtcRequest},
 };
 use actix::prelude::*;
+use bumpalo::{collections::Vec, Bump};
 use futures::stream::{iter, StreamExt, TryStreamExt};
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
@@ -114,7 +116,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                     .into_actor(self),
                 );
             }
-            WebRtcRequest::Rtc(mut message, addr) => {
+            WebRtcRequest::Rtc(message, addr) => {
                 let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
@@ -123,6 +125,12 @@ impl Handler<WebRtcRequest> for ClientActor {
                 ctx.spawn(
                     async move {
                         let rtp_header = RtpHeader::from_buf(&message)?;
+                        let allocator = Bump::new();
+                        let mut message = {
+                            let mut temp = Vec::with_capacity_in(message.len(), &allocator);
+                            temp.extend(&message);
+                            temp
+                        };
 
                         let (mut state, media) = futures::future::join(
                             client_ref.get_state().lock(),
@@ -133,11 +141,9 @@ impl Handler<WebRtcRequest> for ClientActor {
                         let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
                             if is_rtcp {
                                 srtp.unprotect_rctp(&mut message)?;
-                                drop(state);
                                 None
                             } else {
                                 srtp.unprotect(&mut message)?;
-                                drop(state);
 
                                 if rtp_header.payload == 111 {
                                     return Err(ErrorParse::UnsupportedFormat);
@@ -190,7 +196,10 @@ impl Handler<WebRtcRequest> for ClientActor {
                             })
                             .try_for_each_concurrent(None, move |(message, addr)| {
                                 udp_send
-                                    .send(WebRtcRequest::Rtc(message, addr))
+                                    .send(WebRtcRequest::Rtc(
+                                        DataPacket::from(message.as_slice()),
+                                        addr,
+                                    ))
                                     .map_err(ErrorParse::from)
                             })
                             .await?;

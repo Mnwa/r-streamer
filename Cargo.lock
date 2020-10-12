@@ -1481,6 +1481,7 @@ dependencies = [
  "actix-rt",
  "actix-web",
  "bimap",
+ "bumpalo",
  "byteorder",
  "crc32fast",
  "env_logger",
@@ -1726,9 +1727,9 @@ dependencies = [
 [[package]]
 name = "srtp"
 version = "0.6.0"
-source = "git+https://github.com/Mnwa/srtp#6655fd232d2b903cf4c07e6325f13296aa74bd95"
+source = "git+https://github.com/Mnwa/srtp?branch=bump#0e5d0af26ab0070677c87983746fbc7c1f1c9a3d"
 dependencies = [
- "smallvec",
+ "bumpalo",
  "srtp2-sys",
 ]
 
