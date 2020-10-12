@@ -140,7 +140,7 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
                             if is_rtcp {
-                                srtp.unprotect_rctp(&mut message)?;
+                                srtp.unprotect_rtcp(&mut message)?;
                                 None
                             } else {
                                 srtp.unprotect(&mut message)?;

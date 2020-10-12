@@ -54,7 +54,7 @@ impl SrtpTransport {
         self.client.unprotect(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect_rctp(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
+    pub fn unprotect_rtcp(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
         self.client.unprotect_rtcp(buf).map_err(|e| e.into())
     }
 }
