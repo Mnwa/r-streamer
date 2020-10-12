@@ -156,7 +156,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                             return Err(ErrorParse::ClientNotReady(addr));
                         };
 
-                        iter(client_ref.get_receivers().read().await.clone())
+                        iter(client_ref.get_receivers().read().await.iter())
                             .then(|(r_addr, recv)| {
                                 let mut message = message.clone();
 
@@ -198,7 +198,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                                 udp_send
                                     .send(WebRtcRequest::Rtc(
                                         DataPacket::from(message.as_slice()),
-                                        addr,
+                                        *addr,
                                     ))
                                     .map_err(ErrorParse::from)
                             })
