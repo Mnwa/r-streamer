@@ -126,11 +126,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                     async move {
                         let rtp_header = RtpHeader::from_buf(&message)?;
                         let allocator = Bump::new();
-                        let mut message = {
-                            let mut temp = Vec::with_capacity_in(message.len(), &allocator);
-                            temp.extend(&message);
-                            temp
-                        };
+                        let mut message = clone_message(&message, &allocator);
 
                         let (mut state, media) = futures::future::join(
                             client_ref.get_state().lock(),
@@ -158,7 +154,7 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         iter(client_ref.get_receivers().read().await.iter())
                             .then(|(r_addr, recv)| {
-                                let mut message = message.clone();
+                                let mut message = clone_message(&message, &allocator);
 
                                 async move {
                                     let (mut state, media) = futures::future::join(
@@ -334,4 +330,14 @@ impl Message for DeleteMessage {
 #[inline]
 const fn calculate_payload(marker: bool, payload: u8) -> u8 {
     payload | ((marker as u8) << 7)
+}
+
+#[inline]
+fn clone_message<'a>(message: &[u8], allocator: &'a Bump) -> Vec<'a, u8> {
+    let mut temp = Vec::with_capacity_in(message.len(), &allocator);
+    unsafe {
+        temp.set_len(message.len());
+    }
+    temp.copy_from_slice(&message);
+    temp
 }
