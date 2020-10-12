@@ -12,16 +12,14 @@ use crate::{
 };
 use actix::prelude::*;
 use futures::task::Poll;
-use futures::TryFutureExt;
+use futures::{FutureExt, StreamExt, TryFutureExt};
 use log::{info, warn};
 use smallvec::SmallVec;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
 use tokio::macros::support::Pin;
-use tokio::runtime::{Builder, Runtime};
 use tokio::{
     net::udp::{RecvHalf, SendHalf},
     net::UdpSocket,
-    stream::StreamExt,
     time::Duration,
 };
 
@@ -31,7 +29,6 @@ pub struct UdpRecv {
     data: Arc<ServerData>,
     sessions: SessionsStorage,
     media_sessions: MediaUserStorage,
-    runtime: Arc<Runtime>,
 }
 
 impl Actor for UdpRecv {
@@ -40,37 +37,31 @@ impl Actor for UdpRecv {
 
 impl UdpRecv {
     pub fn new(
-        mut recv: RecvHalf,
+        recv: RecvHalf,
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
         data: Arc<ServerData>,
-        runtime: Arc<Runtime>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
 
-            let self_addr = ctx.address();
+            ctx.add_message_stream(futures::stream::unfold(recv, |mut recv| async move {
+                let mut message = DataPacket::with_capacity(1200);
+                unsafe { message.set_len(1200) }
 
-            runtime.spawn(async move {
-                loop {
-                    let mut message = DataPacket::with_capacity(1200);
-                    unsafe { message.set_len(1200) }
+                match recv.recv_from(&mut message).await {
+                    Ok((n, addr)) => {
+                        message.truncate(n);
+                        let message = WebRtcRequest::from((message, addr));
 
-                    match recv.recv_from(&mut message).await {
-                        Ok((n, addr)) => {
-                            message.truncate(n);
-                            let message = WebRtcRequest::from((message, addr));
-
-                            if let Err(err) = self_addr.send(message).await {
-                                warn!("could not receive UDP message: {}", err);
-                            }
-                        }
-                        Err(err) => {
-                            warn!("could not receive UDP message: {}", err);
-                        }
+                        Some((message, recv))
+                    }
+                    Err(err) => {
+                        warn!("could not receive UDP message: {}", err);
+                        None
                     }
                 }
-            });
+            }));
 
             ctx.add_stream(tokio::time::interval(Duration::from_secs(60)).map(|_| ClearData));
 
@@ -80,7 +71,6 @@ impl UdpRecv {
                 data,
                 sessions: HashMap::new(),
                 media_sessions: HashMap::new(),
-                runtime,
             }
         })
     }
@@ -97,7 +87,7 @@ impl Handler<ServerDataRequest> for UdpRecv {
 impl Handler<WebRtcRequest> for UdpRecv {
     type Result = ();
 
-    fn handle(&mut self, item: WebRtcRequest, _ctx: &mut Context<Self>) {
+    fn handle(&mut self, item: WebRtcRequest, ctx: &mut Context<Self>) {
         match item {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
@@ -112,34 +102,42 @@ impl Handler<WebRtcRequest> for UdpRecv {
                         .map(MediaList::clone);
 
                     if let Some(media) = media {
-                        self.runtime.spawn(
+                        ctx.spawn(
                             self.dtls
                                 .send(MediaAddrMessage(addr, media))
-                                .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                                .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                                .map(|_| ())
+                                .into_actor(self),
                         );
                     }
 
-                    self.runtime.spawn(
+                    ctx.spawn(
                         futures::future::try_join(
                             self.send.send(WebRtcRequest::Stun(req, addr)),
                             self.dtls.send(GroupId(group_id, addr)),
                         )
-                        .inspect_err(|e| warn!("dtls or udp send err: {:?}", e)),
+                        .inspect_err(|e| warn!("dtls or udp send err: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                     );
                 }
             }
             WebRtcRequest::Dtls(message, addr) => {
-                self.runtime.spawn(
+                ctx.spawn(
                     self.dtls
                         .send(WebRtcRequest::Dtls(message, addr))
-                        .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                self.runtime.spawn(
+                ctx.spawn(
                     self.dtls
                         .send(WebRtcRequest::Rtc(message, addr))
-                        .inspect_err(|e| warn!("dtls send err: {:?}", e)),
+                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("recv unknown request"),
@@ -194,17 +192,15 @@ impl Handler<MediaUserMessage> for UdpRecv {
 pub struct UdpSend {
     send: Arc<SendHalf>,
     data: Arc<ServerData>,
-    runtime: Arc<Runtime>,
 }
 
 impl UdpSend {
-    pub fn new(send: SendHalf, data: Arc<ServerData>, runtime: Arc<Runtime>) -> Addr<Self> {
+    pub fn new(send: SendHalf, data: Arc<ServerData>) -> Addr<Self> {
         Self::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
             Self {
                 send: Arc::new(send),
                 data,
-                runtime,
             }
         })
     }
@@ -221,7 +217,7 @@ impl Actor for UdpSend {
 impl Handler<WebRtcRequest> for UdpSend {
     type Result = ();
 
-    fn handle(&mut self, msg: WebRtcRequest, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
@@ -245,23 +241,31 @@ impl Handler<WebRtcRequest> for UdpSend {
 
                 message_buf.truncate(n);
 
-                self.runtime
-                    .spawn(UdpMassSender(send, addr, message_buf).inspect_err(|e| {
-                        if e.kind() != std::io::ErrorKind::AddrNotAvailable {
-                            warn!("err stun: {:?}", e)
-                        }
-                    }));
+                ctx.spawn(
+                    UdpMassSender(send, addr, message_buf)
+                        .inspect_err(|e| {
+                            if e.kind() != std::io::ErrorKind::AddrNotAvailable {
+                                warn!("err stun: {:?}", e)
+                            }
+                        })
+                        .map(|_| ())
+                        .into_actor(self),
+                );
             }
             WebRtcRequest::Dtls(message, addr) => {
-                self.runtime.spawn(
+                ctx.spawn(
                     UdpMassSender(send, addr, message)
-                        .inspect_err(|e| warn!("err dtls send: {:?}", e)),
+                        .inspect_err(|e| warn!("err dtls send: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                self.runtime.spawn(
+                ctx.spawn(
                     UdpMassSender(send, addr, message)
-                        .inspect_err(|e| warn!("err rtc send: {:?}", e)),
+                        .inspect_err(|e| warn!("err rtc send: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Unknown => warn!("send unknown request"),
@@ -270,28 +274,15 @@ impl Handler<WebRtcRequest> for UdpSend {
 }
 
 pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
-    let runtime = Arc::new(
-        Builder::new()
-            .threaded_scheduler()
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap(),
-    );
-
     let server = UdpSocket::bind(addr).await.expect("udp must be up");
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
     let data = Arc::new(ServerData { meta, crypto });
 
     let (recv, send) = server.split();
-    let udp_send = UdpSend::new(send, Arc::clone(&data), runtime.clone());
-    let dtls = ClientActor::new(
-        Arc::clone(&data.crypto.ssl_acceptor),
-        udp_send.clone(),
-        runtime.clone(),
-    );
-    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data, runtime);
+    let udp_send = UdpSend::new(send, Arc::clone(&data));
+    let dtls = ClientActor::new(Arc::clone(&data.crypto.ssl_acceptor), udp_send.clone());
+    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data);
 
     (udp_recv, udp_send)
 }
@@ -350,4 +341,4 @@ impl Future for UdpMassSender {
     }
 }
 
-pub type DataPacket = SmallVec<[u8; 2048]>;
+pub type DataPacket = SmallVec<[u8; 512]>;

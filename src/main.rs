@@ -6,7 +6,7 @@ mod server;
 mod stun;
 
 #[global_allocator]
-static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use crate::{
     sdp::generate_streamer_response,
@@ -79,7 +79,7 @@ async fn parse_sdp(
     recv: Data<Addr<UdpRecv>>,
     sdp_addr: Data<SocketAddr>,
 ) -> Result<HttpResponse> {
-    let group_id = path_info.0;
+    let group_id = path_info.into_inner().0;
     let body = String::from_utf8(body.to_vec()).map_err(|_| HttpResponse::BadRequest().finish())?;
 
     let sdp = generate_streamer_response(&body, recv.into_inner(), group_id, **sdp_addr)

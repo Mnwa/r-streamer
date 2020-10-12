@@ -18,13 +18,13 @@ openssl = { version = "0.10", features = ["vendored"] }
 openssl-sys = "0.9"
 byteorder = "1.3"
 crc32fast = "1.2"
-actix = "0.10.0-alpha.3"
+actix = "0.10.0"
 actix-rt = "1"
 tokio-openssl = "0.4"
-srtp = { git = "https://github.com/Mnwa/srtp" }
-actix-web = "2"
-actix-files = "0.2"
+srtp = { git = "https://github.com/Mnwa/srtp", branch = "vec" }
+actix-web = "3"
+actix-files = "0.4"
 smallvec = "1.4"
 bimap = "0.5"
-rpmalloc = { version = "0.2.0", features = ["unlimited_cache", "unlimited_thread_cache", "unlimited_global_cache"] }
 fast-async-mutex = "0.6"
+mimalloc = "0.1"
