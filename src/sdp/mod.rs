@@ -192,7 +192,7 @@ fn set_attributes(
 
     // m.set_attribute(SendrecvAttr)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
-    // m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
+    m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
         hash_algorithm: Sha256,
         fingerprint,
