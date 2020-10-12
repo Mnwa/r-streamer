@@ -341,4 +341,4 @@ impl Future for UdpMassSender {
     }
 }
 
-pub type DataPacket = SmallVec<[u8; 512]>;
+pub type DataPacket = SmallVec<[u8; 2048]>;

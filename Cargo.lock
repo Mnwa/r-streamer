@@ -1726,8 +1726,9 @@ dependencies = [
 [[package]]
 name = "srtp"
 version = "0.6.0"
-source = "git+https://github.com/Mnwa/srtp?branch=vec#ebe8afea5c917642b01377be4f554a69cb7e78e3"
+source = "git+https://github.com/Mnwa/srtp#6655fd232d2b903cf4c07e6325f13296aa74bd95"
 dependencies = [
+ "smallvec",
  "srtp2-sys",
 ]
 

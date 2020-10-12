@@ -21,7 +21,7 @@ crc32fast = "1.2"
 actix = "0.10.0"
 actix-rt = "1"
 tokio-openssl = "0.4"
-srtp = { git = "https://github.com/Mnwa/srtp", branch = "vec" }
+srtp = { git = "https://github.com/Mnwa/srtp", branch = "master" }
 actix-web = "3"
 actix-files = "0.4"
 smallvec = "1.4"

@@ -120,7 +120,7 @@ impl AsyncWrite for ClientSslPackets {
         match self
             .get_mut()
             .outgoing_writer
-            .send(DataPacket::from_slice(buf))
+            .send(DataPacket::from(buf))
             .poll_unpin(cx)
         {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),
