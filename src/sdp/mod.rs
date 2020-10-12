@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+use webrtc_sdp::attribute_type::SdpAttributeType::{Recvonly, Sendonly};
 use webrtc_sdp::{
     address::{Address, ExplicitlyTypedAddress},
     attribute_type::SdpAttribute::Rtpmap,
@@ -22,7 +23,7 @@ use webrtc_sdp::{
         SdpAttribute,
         SdpAttribute::{
             Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
-            Sendrecv as SendrecvAttr, Setup,
+            Sendonly as SendonlyAttr, Sendrecv as SendrecvAttr, Setup,
         },
         SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
         SdpAttributeFingerprint,
@@ -89,7 +90,7 @@ pub async fn generate_streamer_response(
         .expect("session sending error");
 
     let mut rng = rand::thread_rng();
-    origin.session_id = rng.gen();
+    origin.session_id = rng.gen::<u16>() as u64;
     origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
 
     let media: Vec<SdpMedia> = req
@@ -149,7 +150,13 @@ fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
 
 fn remove_useless_attributes(m: &mut SdpMedia) {
     m.remove_attribute(Msid);
-    m.remove_attribute(Sendrecv);
+    if m.get_attribute(Recvonly).is_some() {
+        m.remove_attribute(Recvonly);
+        m.set_attribute(SendonlyAttr);
+    } else {
+        m.remove_attribute(Recvonly);
+        m.remove_attribute(Sendonly);
+    }
     m.remove_attribute(SsrcGroup);
     m.remove_attribute(Ssrc);
 }
@@ -183,9 +190,9 @@ fn set_attributes(
         .into_iter()
         .try_for_each(|attr| m.add_codec(attr))?;
 
-    m.set_attribute(SendrecvAttr)?;
+    // m.set_attribute(SendrecvAttr)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
-    m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
+    // m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
         hash_algorithm: Sha256,
         fingerprint,
