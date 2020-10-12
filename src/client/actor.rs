@@ -338,6 +338,6 @@ fn clone_message<'a>(message: &[u8], allocator: &'a Bump) -> Vec<'a, u8> {
     unsafe {
         temp.set_len(message.len());
     }
-    temp.copy_from_slice(&message);
+    temp.copy_from_slice(message);
     temp
 }
