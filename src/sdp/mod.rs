@@ -22,8 +22,8 @@ use webrtc_sdp::{
     attribute_type::{
         SdpAttribute,
         SdpAttribute::{
-            Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
-            Sendonly as SendonlyAttr, Sendrecv as SendrecvAttr, Setup,
+            Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic,
+            Recvonly as RecvonlyAttr, Rtcp, Sendonly as SendonlyAttr, Setup,
         },
         SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
         SdpAttributeFingerprint,
@@ -32,7 +32,7 @@ use webrtc_sdp::{
         SdpAttributeGroupSemantic::Bundle,
         SdpAttributeMsidSemantic, SdpAttributeRtcp,
         SdpAttributeSetup::Passive,
-        SdpAttributeType::{Group as GroupType, IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup},
+        SdpAttributeType::{Group as GroupType, IceUfrag, Msid, Ssrc, SsrcGroup},
     },
     error::{SdpParserError, SdpParserInternalError},
     media_type::SdpMedia,
@@ -99,7 +99,7 @@ pub async fn generate_streamer_response(
         .map(|mut m| {
             m.set_port(sdp_addr.port() as u32);
 
-            remove_useless_attributes(&mut m);
+            remove_useless_attributes(&mut m)?;
             set_attributes(
                 &mut m,
                 server_user.clone(),
@@ -148,17 +148,18 @@ fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
     });
 }
 
-fn remove_useless_attributes(m: &mut SdpMedia) {
+fn remove_useless_attributes(m: &mut SdpMedia) -> Result<(), SdpParserInternalError> {
     m.remove_attribute(Msid);
     if m.get_attribute(Recvonly).is_some() {
         m.remove_attribute(Recvonly);
-        m.set_attribute(SendonlyAttr);
-    } else {
-        m.remove_attribute(Recvonly);
+        m.set_attribute(SendonlyAttr)?;
+    } else if m.get_attribute(Sendonly).is_some() {
         m.remove_attribute(Sendonly);
+        m.set_attribute(RecvonlyAttr)?;
     }
     m.remove_attribute(SsrcGroup);
     m.remove_attribute(Ssrc);
+    Ok(())
 }
 
 fn set_attributes(
@@ -190,7 +191,6 @@ fn set_attributes(
         .into_iter()
         .try_for_each(|attr| m.add_codec(attr))?;
 
-    // m.set_attribute(SendrecvAttr)?;
     m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
     m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
@@ -202,7 +202,7 @@ fn set_attributes(
         port: addr.port(),
         unicast_addr: Some(ExplicitlyTypedAddress::from(addr.ip())),
     }))?;
-    m.set_attribute(Candidate(SdpAttributeCandidate {
+    m.add_attribute(Candidate(SdpAttributeCandidate {
         foundation: "0".to_string(),
         priority: rng.gen::<u32>() as u64,
         address: Address::Ip(addr.ip()),
@@ -219,7 +219,7 @@ fn set_attributes(
         unknown_extensions: vec![],
     }))?;
 
-    m.set_attribute(EndOfCandidates)?;
+    // m.set_attribute(EndOfCandidates)?;
 
     Ok(())
 }
