@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+use webrtc_sdp::attribute_type::SdpAttribute::{IceOptions, RtcpMux};
 use webrtc_sdp::attribute_type::SdpAttributeType::{Recvonly, Sendonly};
 use webrtc_sdp::{
     address::{Address, ExplicitlyTypedAddress},
@@ -128,6 +129,7 @@ pub async fn generate_streamer_response(
     res.add_attribute(group)?;
 
     res.add_attribute(IceLite)?;
+    res.add_attribute(IceOptions(vec!["trickle".into()]))?;
 
     res.set_timing(SdpTiming { start: 0, stop: 0 });
 
@@ -202,6 +204,9 @@ fn set_attributes(
         port: addr.port(),
         unicast_addr: Some(ExplicitlyTypedAddress::from(addr.ip())),
     }))?;
+
+    m.set_attribute(RtcpMux)?;
+
     m.add_attribute(Candidate(SdpAttributeCandidate {
         foundation: "0".to_string(),
         priority: rng.gen::<u32>() as u64,
@@ -219,7 +224,7 @@ fn set_attributes(
         unknown_extensions: vec![],
     }))?;
 
-    // m.set_attribute(EndOfCandidates)?;
+    m.set_attribute(EndOfCandidates)?;
 
     Ok(())
 }

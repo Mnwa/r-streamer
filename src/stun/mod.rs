@@ -18,6 +18,10 @@ pub fn parse_stun_binding_request(bytes: &[u8]) -> Option<StunBindingRequest> {
         return None;
     }
 
+    if bytes[0] >> 6 != 0 {
+        return None;
+    }
+
     let stun_type = NetworkEndian::read_u16(&bytes[0..2]);
     if stun_type != StunType::BindingRequest as u16 {
         return None;

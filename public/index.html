@@ -157,13 +157,13 @@
     async function receive() {
         const configuration = {
             ...getSelectedSdpSemantics(),
-            iceServers: [{"urls": "stun:144.76.219.168:3478"},
-                {
-                    "urls": "turn:144.76.219.168:3478",
-                    "credential": "kurento-password",
-                    "username": "kurento-user"
-                }
-            ],
+            // iceServers: [{"urls": "stun:144.76.219.168:3478"},
+            //     {
+            //         "urls": "turn:144.76.219.168:3478",
+            //         "credential": "kurento-password",
+            //         "username": "kurento-user"
+            //     }
+            // ],
         };
 
         pc2 = new RTCPeerConnection(configuration);
@@ -211,13 +211,13 @@
         }
         const configuration = {
             ...getSelectedSdpSemantics(),
-            iceServers: [{"urls": "stun:144.76.219.168:3478"},
-                {
-                    "urls": "turn:144.76.219.168:3478",
-                    "credential": "kurento-password",
-                    "username": "kurento-user"
-                }
-            ],
+            // iceServers: [{"urls": "stun:144.76.219.168:3478"},
+            //     {
+            //         "urls": "turn:144.76.219.168:3478",
+            //         "credential": "kurento-password",
+            //         "username": "kurento-user"
+            //     }
+            // ],
         };
         console.log('RTCPeerConnection configuration:', configuration);
         pc1 = new RTCPeerConnection(configuration);
