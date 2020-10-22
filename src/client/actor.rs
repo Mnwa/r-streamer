@@ -65,7 +65,10 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                 let incoming_writer = Arc::clone(&client_ref.get_channels().incoming_writer);
 
-                ctx.add_message_stream(client_ref.get_channels().outgoing_stream(addr));
+                if !client_ref.dtls_connected() {
+                    ctx.add_message_stream(client_ref.get_channels().outgoing_stream(addr));
+                    client_ref.make_connected()
+                }
 
                 ctx.spawn(
                     async move {
@@ -90,6 +93,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                         Err(e) => warn!("delete err: {}", e),
                                         Ok(is_deleted) => info!("deleted {}", is_deleted),
                                     }
+                                } else {
+                                    info!("client {} connected", addr)
                                 }
                             }
                             ClientStateStatus::Connected => {
@@ -153,6 +158,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                         };
 
                         iter(client_ref.get_receivers().read().await.iter())
+                            .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
                             .then(|(r_addr, recv)| {
                                 let mut message = clone_message(&message, &allocator);
 
@@ -178,6 +184,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                     .copied()
                                             });
 
+                                            println!("{:?}, {:?}", payload, codec);
+
                                             if let Some(payload) = payload {
                                                 message[1] =
                                                     calculate_payload(rtp_header.marker, payload);
@@ -202,7 +210,7 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         Ok(())
                     }
-                    .inspect(move |_| println!("{:?}", start.elapsed()))
+                    // .inspect(move |_| println!("{:?}", start.elapsed()))
                     .inspect_err(move |e| {
                         if !e.should_ignored() {
                             warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)

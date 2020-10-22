@@ -3,7 +3,6 @@ use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
-use fast_async_mutex::{mutex_ordered::OrderedMutex, rwlock_ordered::OrderedRwLock};
 use futures::channel::mpsc::SendError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -13,6 +12,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tokio::sync::{Mutex, RwLock};
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]
@@ -88,29 +88,38 @@ pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
 pub type ClientSafeRef = Arc<Client>;
 
 pub struct Client {
-    state: OrderedMutex<ClientState>,
+    state: Mutex<ClientState>,
     channels: ClientSslPacketsChannels,
-    media: OrderedRwLock<Option<MediaList>>,
-    receivers: OrderedRwLock<ClientsRefStorage>,
+    media: RwLock<Option<MediaList>>,
+    receivers: RwLock<ClientsRefStorage>,
     is_deleted: AtomicBool,
+    dtls_connected: AtomicBool,
 }
 impl Client {
-    pub fn get_state(&self) -> &OrderedMutex<ClientState> {
+    pub fn get_state(&self) -> &Mutex<ClientState> {
         &self.state
     }
-    pub fn get_media(&self) -> &OrderedRwLock<Option<MediaList>> {
+    pub fn get_media(&self) -> &RwLock<Option<MediaList>> {
         &self.media
     }
-    pub fn get_receivers(&self) -> &OrderedRwLock<ClientsRefStorage> {
+    pub fn get_receivers(&self) -> &RwLock<ClientsRefStorage> {
         &self.receivers
     }
 
     pub fn delete(&self) {
-        self.is_deleted.store(true, Ordering::Relaxed)
+        self.is_deleted.store(true, Ordering::Release)
     }
 
     pub fn is_deleted(&self) -> bool {
-        self.is_deleted.load(Ordering::Relaxed)
+        self.is_deleted.load(Ordering::Acquire)
+    }
+
+    pub fn dtls_connected(&self) -> bool {
+        self.dtls_connected.load(Ordering::Acquire)
+    }
+
+    pub fn make_connected(&self) {
+        self.dtls_connected.store(true, Ordering::Release);
     }
 
     pub fn get_channels(&self) -> &ClientSslPacketsChannels {
@@ -125,11 +134,12 @@ impl Default for Client {
     fn default() -> Self {
         let (stream, channels) = ClientSslPackets::new();
         Client {
-            state: OrderedMutex::new(ClientState::New(stream)),
+            state: Mutex::new(ClientState::New(stream)),
             channels,
-            media: OrderedRwLock::new(Default::default()),
-            receivers: OrderedRwLock::new(Default::default()),
-            is_deleted: AtomicBool::new(false),
+            media: Default::default(),
+            receivers: Default::default(),
+            is_deleted: Default::default(),
+            dtls_connected: Default::default(),
         }
     }
 }

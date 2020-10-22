@@ -1,6 +1,5 @@
 use crate::dtls::message::DtlsMessage;
 use crate::server::udp::DataPacket;
-use fast_async_mutex::mutex::Mutex;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     stream::FusedStream,
@@ -13,6 +12,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::Mutex;
 use tokio::{io::Error, prelude::*};
 
 pub struct ClientSslPackets {

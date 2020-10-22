@@ -737,12 +737,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fast-async-mutex"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daa01a9751808c04cc3b5ee8a40d21649ff067d5ceaca931145e9e32bf397eb0"
-
-[[package]]
 name = "flate2"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1485,7 +1479,6 @@ dependencies = [
  "byteorder",
  "crc32fast",
  "env_logger",
- "fast-async-mutex",
  "futures",
  "log",
  "mimalloc",
