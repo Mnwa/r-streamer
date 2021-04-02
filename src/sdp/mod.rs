@@ -110,7 +110,11 @@ pub async fn generate_streamer_response(
                 sdp_addr,
                 &mut rng,
             )?;
-            replace_connection(m.get_connection(), sdp_addr);
+            m.set_connection(SdpConnection {
+                address: ExplicitlyTypedAddress::from(sdp_addr.ip()),
+                ttl: None,
+                amount: None,
+            });
             Ok(m)
         })
         .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;
@@ -136,19 +140,6 @@ pub async fn generate_streamer_response(
 
     res.media = media;
     Ok(res)
-}
-
-fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
-    #[allow(mutable_transmutes)]
-    #[allow(clippy::transmute_ptr_to_ptr)]
-    let connection = unsafe {
-        std::mem::transmute::<&Option<SdpConnection>, &mut Option<SdpConnection>>(connection)
-    };
-    *connection = Some(SdpConnection {
-        address: ExplicitlyTypedAddress::from(addr.ip()),
-        ttl: None,
-        amount: None,
-    });
 }
 
 fn remove_useless_attributes(m: &mut SdpMedia) -> Result<(), SdpParserInternalError> {
