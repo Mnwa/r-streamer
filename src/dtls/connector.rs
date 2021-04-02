@@ -14,7 +14,7 @@ use tokio_openssl::SslStream;
 pub async fn connect(
     client: ClientSafeRef,
     ssl_acceptor: Arc<SslAcceptor>,
-) -> Result<(), ClientError> {
+) -> Result<SrtpTransport, ClientError> {
     let mut state = client.get_state().lock().await;
 
     let ssl = Ssl::new(ssl_acceptor.context())?;
@@ -31,7 +31,7 @@ pub async fn connect(
                 .map_err(|_| std::io::ErrorKind::TimedOut)??;
                 Ok(async_stream)
             }
-            ClientState::Connected(_, _) => return Err(ClientError::AlreadyConnected),
+            ClientState::Connected(_) => return Err(ClientError::AlreadyConnected),
             ClientState::Shutdown => return Err(std::io::ErrorKind::WouldBlock.into()),
         };
 
@@ -45,6 +45,6 @@ pub async fn connect(
 
     let srtp_transport = SrtpTransport::new(ssl_stream.ssl())?;
 
-    *state = ClientState::Connected(ssl_stream, srtp_transport);
-    Ok(())
+    *state = ClientState::Connected(ssl_stream);
+    Ok(srtp_transport)
 }

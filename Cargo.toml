@@ -21,10 +21,13 @@ crc32fast = "1.2"
 actix = "0.11"
 actix-rt = "2.2"
 tokio-openssl = "0.6"
-srtp = { git = "https://github.com/Mnwa/srtp", branch = "bump" }
+srtp = { git = "https://github.com/Mnwa/srtp", branch = "master" }
 actix-web = "4.0.0-beta.5"
 actix-files = "0.6.0-beta.4"
 smallvec = "1.6"
 bimap = "0.5"
 mimalloc = "0.1"
-bumpalo = { version = "3.6", features = ["collections"] }
+parking_lot = { version = "0.11" }
+num_cpus = "1.13"
+rayon = "1.5"
+smol_str = { version = "0.1" }

@@ -1,6 +1,7 @@
+use crate::server::udp::DataPacket;
 use actix::MailboxError;
-use bumpalo::collections::Vec;
 use openssl::{error::ErrorStack, ssl::SslRef};
+use smol_str::SmolStr;
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
 use std::net::SocketAddr;
 use std::{
@@ -21,10 +22,8 @@ impl SrtpTransport {
                 CryptoPolicy::AesCm128HmacSha1Bit80,
                 CryptoPolicy::AesCm128HmacSha1Bit80,
             ),
-            Some(profile) => {
-                return Err(ErrorParse::UnsupportedProfile(profile.name().to_string()))
-            }
-            None => return Err(ErrorParse::UnsupportedProfile("empty".to_string())),
+            Some(profile) => return Err(ErrorParse::UnsupportedProfile(profile.name().into())),
+            None => return Err(ErrorParse::UnsupportedProfile("empty".into())),
         };
 
         let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
@@ -42,19 +41,19 @@ impl SrtpTransport {
         })
     }
 
-    pub fn protect(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
+    pub fn protect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.server.protect(buf).map_err(|e| e.into())
     }
 
-    pub fn protect_rtcp(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
+    pub fn protect_rtcp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.server.protect_rtcp(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
+    pub fn unprotect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.client.unprotect(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect_rtcp(&mut self, buf: &mut Vec<u8>) -> Result<(), ErrorParse> {
+    pub fn unprotect_rtcp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
         self.client.unprotect_rtcp(buf).map_err(|e| e.into())
     }
 }
@@ -63,7 +62,7 @@ impl SrtpTransport {
 pub enum ErrorParse {
     Openssl(ErrorStack),
     Srtp(ErrorSrtp),
-    UnsupportedProfile(String),
+    UnsupportedProfile(SmolStr),
     UnsupportedFormat,
     ClientNotReady(SocketAddr),
     ActorDead(MailboxError),

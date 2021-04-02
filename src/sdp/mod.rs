@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+use smol_str::SmolStr;
 use webrtc_sdp::attribute_type::SdpAttribute::{IceOptions, RtcpMux};
 use webrtc_sdp::attribute_type::SdpAttributeType::{Recvonly, Sendonly};
 use webrtc_sdp::{
@@ -75,7 +76,7 @@ pub async fn generate_streamer_response(
     let _inserted = iter(&req.media)
         .filter_map(|m| ready(m.get_attribute(IceUfrag)))
         .map(|m| m.to_string().replace("ice-ufrag:", ""))
-        .map(|client_user| Session::new(server_user.clone(), client_user))
+        .map(|client_user| Session::new(server_user.clone(), client_user.into()))
         .map(|session| {
             (
                 MediaUserMessage(session.get_client(), req.media.clone().into()),
@@ -166,8 +167,8 @@ fn remove_useless_attributes(m: &mut SdpMedia) -> Result<(), SdpParserInternalEr
 
 fn set_attributes(
     m: &mut SdpMedia,
-    server_user: String,
-    server_passwd: String,
+    server_user: SmolStr,
+    server_passwd: SmolStr,
     fingerprint: Vec<u8>,
     addr: SocketAddr,
     rng: &mut ThreadRng,
@@ -193,8 +194,8 @@ fn set_attributes(
         .into_iter()
         .try_for_each(|attr| m.add_codec(attr))?;
 
-    m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
-    m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
+    m.set_attribute(SdpAttribute::IcePwd(server_passwd.to_string()))?;
+    m.set_attribute(SdpAttribute::IceUfrag(server_user.to_string()))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
         hash_algorithm: Sha256,
         fingerprint,
@@ -234,7 +235,7 @@ pub enum SdpResponseGeneratorError {
     SdpParserError(SdpParserError),
     SdpParserInternalError(SdpParserInternalError),
     MailBoxError(MailboxError),
-    CustomError(String),
+    CustomError(SmolStr),
 }
 
 impl Display for SdpResponseGeneratorError {

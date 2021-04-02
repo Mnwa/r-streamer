@@ -1,11 +1,8 @@
 use crate::client::clients::ClientStateStatus;
-use crate::rtp::core::RtpHeader;
-use crate::rtp::srtp::ErrorParse;
 use crate::sdp::media::MediaAddrMessage;
-use crate::server::udp::DataPacket;
 use crate::{
     client::{
-        clients::{ClientState, ClientsRefStorage},
+        clients::ClientsRefStorage,
         dtls::{extract_dtls, push_dtls},
         group::{Group, GroupId},
     },
@@ -13,34 +10,33 @@ use crate::{
         connector::connect,
         message::{DtlsMessage, MessageType},
     },
-    rtp::core::is_rtcp,
     server::udp::{UdpSend, WebRtcRequest},
 };
 use actix::prelude::*;
-use bumpalo::{collections::Vec, Bump};
-use futures::stream::{iter, StreamExt, TryStreamExt};
-use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use openssl::ssl::SslAcceptor;
-use std::ops::DerefMut;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
-    client_storage: ClientsRefStorage,
+    client_storage: Arc<ClientsRefStorage>,
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
     udp_send: Addr<UdpSend>,
 }
 
 impl ClientActor {
-    pub fn new(ssl_acceptor: Arc<SslAcceptor>, udp_send: Addr<UdpSend>) -> Addr<ClientActor> {
+    pub fn new(
+        ssl_acceptor: Arc<SslAcceptor>,
+        udp_send: Addr<UdpSend>,
+        client_storage: Arc<ClientsRefStorage>,
+    ) -> Addr<ClientActor> {
         ClientActor::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
             ClientActor {
                 ssl_acceptor,
                 udp_send,
-                client_storage: ClientsRefStorage::new(),
+                client_storage,
                 groups: Group::default(),
             }
         })
@@ -57,7 +53,7 @@ impl Handler<WebRtcRequest> for ClientActor {
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             WebRtcRequest::Dtls(message, addr) => {
-                let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
+                let client_ref = Arc::clone(self.client_storage.write().entry(addr).or_default());
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
                 let self_addr = ctx.address();
@@ -86,14 +82,18 @@ impl Handler<WebRtcRequest> for ClientActor {
 
                         match status {
                             ClientStateStatus::New => {
-                                if let Err(e) = connect(client_ref.clone(), acceptor).await {
-                                    warn!("connect err: {}", e);
-                                    match self_addr.send(DeleteMessage(addr)).await {
-                                        Err(e) => warn!("delete err: {}", e),
-                                        Ok(is_deleted) => info!("deleted {}", is_deleted),
+                                match connect(client_ref.clone(), acceptor).await {
+                                    Err(e) => {
+                                        warn!("connect err: {}", e);
+                                        match self_addr.send(DeleteMessage(addr)).await {
+                                            Err(e) => warn!("delete err: {}", e),
+                                            Ok(is_deleted) => info!("deleted {}", is_deleted),
+                                        }
                                     }
-                                } else {
-                                    info!("client {} connected", addr)
+                                    Ok(srtp_transport) => {
+                                        *client_ref.get_srtp().lock() = Some(srtp_transport);
+                                        info!("client {} connected", addr)
+                                    }
                                 }
                             }
                             ClientStateStatus::Connected => {
@@ -120,101 +120,8 @@ impl Handler<WebRtcRequest> for ClientActor {
                     .into_actor(self),
                 );
             }
-            WebRtcRequest::Rtc(message, addr) => {
-                let udp_send = self.udp_send.clone();
-                let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
-                let is_rtcp = is_rtcp(&message);
-
-                ctx.spawn(
-                    async move {
-                        let rtp_header = RtpHeader::from_buf(&message)?;
-                        let allocator = Bump::new();
-                        let mut message = clone_message(&message, &allocator);
-
-                        let (mut state, media) = futures::future::join(
-                            client_ref.get_state().lock(),
-                            client_ref.get_media().read(),
-                        )
-                        .await;
-
-                        let codec = if let ClientState::Connected(_, srtp) = state.deref_mut() {
-                            if is_rtcp {
-                                srtp.unprotect_rtcp(&mut message)?;
-                                None
-                            } else {
-                                srtp.unprotect(&mut message)?;
-
-                                if rtp_header.payload == 111 {
-                                    return Err(ErrorParse::UnsupportedFormat);
-                                }
-                                media
-                                    .as_ref()
-                                    .and_then(|media| media.get_name(&rtp_header.payload))
-                            }
-                        } else {
-                            return Err(ErrorParse::ClientNotReady(addr));
-                        };
-
-                        iter(client_ref.get_receivers().read().await.iter())
-                            .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
-                            .then(|(r_addr, recv)| {
-                                let mut message = clone_message(&message, &allocator);
-
-                                async move {
-                                    let (mut state, media) = futures::future::join(
-                                        recv.get_state().lock(),
-                                        recv.get_media().read(),
-                                    )
-                                    .await;
-
-                                    if let ClientState::Connected(_, srtp) = state.deref_mut() {
-                                        if is_rtcp {
-                                            srtp.protect_rtcp(&mut message)?;
-                                            drop(state);
-                                        } else {
-                                            srtp.protect(&mut message)?;
-                                            drop(state);
-
-                                            let payload = codec.and_then(|codec| {
-                                                media
-                                                    .as_ref()
-                                                    .and_then(|media| media.get_id(codec))
-                                                    .copied()
-                                            });
-
-                                            if let Some(payload) = payload {
-                                                message[1] =
-                                                    calculate_payload(rtp_header.marker, payload);
-                                            }
-                                        }
-
-                                        Ok((message, r_addr))
-                                    } else {
-                                        Err(ErrorParse::ClientNotReady(addr))
-                                    }
-                                }
-                            })
-                            .try_for_each_concurrent(None, move |(message, addr)| {
-                                udp_send
-                                    .send(WebRtcRequest::Rtc(
-                                        DataPacket::from(message.as_slice()),
-                                        *addr,
-                                    ))
-                                    .map_err(ErrorParse::from)
-                            })
-                            .await?;
-
-                        Ok(())
-                    }
-                    // .inspect(move |_| println!("{:?}", start.elapsed()))
-                    .inspect_err(move |e| {
-                        if !e.should_ignored() {
-                            warn!("processor err: {:?} is_rtcp: {}", e, is_rtcp)
-                        }
-                    })
-                    .map(|_| ())
-                    .into_actor(self),
-                );
+            WebRtcRequest::Rtc(_, _) => {
+                warn!("stun could not be accepted in client actor")
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
             WebRtcRequest::Unknown => warn!("client actor unknown request"),
@@ -249,23 +156,19 @@ impl Handler<DeleteMessage> for ClientActor {
     fn handle(
         &mut self,
         DeleteMessage(addr): DeleteMessage,
-        ctx: &mut Context<Self>,
+        _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        let client = self.client_storage.remove(&addr);
+        let client = self.client_storage.write().remove(&addr);
 
         if let Some(client) = client {
             self.groups.remove_sender(addr);
-            ctx.spawn(
-                async move {
-                    client.delete();
-                    let mut receivers = client.get_receivers().write().await;
-                    *receivers = iter(receivers.clone())
-                        .filter(|(_, recv)| futures::future::ready(!recv.is_deleted()))
-                        .collect()
-                        .await;
-                }
-                .into_actor(self),
-            );
+            client.delete();
+            let mut receivers = client.get_receivers().write();
+            *receivers = receivers
+                .clone()
+                .into_iter()
+                .filter(|(_, recv)| !recv.is_deleted())
+                .collect();
         }
         true
     }
@@ -277,30 +180,21 @@ impl Handler<GroupId> for ClientActor {
     fn handle(
         &mut self,
         GroupId(group_id, addr): GroupId,
-        ctx: &mut Context<Self>,
+        _ctx: &mut Context<Self>,
     ) -> Self::Result {
         let sender_addr = self.groups.insert_or_get_sender(group_id, addr);
-        let result = self
-            .client_storage
-            .get(&addr)
-            .cloned()
-            .map(|client_ref| (client_ref, sender_addr))
-            .filter(|(_, sender_addr)| *sender_addr != addr)
-            .and_then(|(client_ref, sender_addr)| {
-                self.client_storage
-                    .get_mut(&sender_addr)
-                    .cloned()
-                    .map(|sender_ref| (client_ref, sender_ref))
-            });
+        if sender_addr == addr {
+            return;
+        }
 
-        if let Some((client_ref, sender_ref)) = result {
-            ctx.spawn(
-                async move {
-                    let mut receivers = sender_ref.get_receivers().write().await;
-                    receivers.insert(addr, client_ref);
-                }
-                .into_actor(self),
-            );
+        let client_storage = &*self.client_storage.read();
+
+        let receiver_ref = client_storage.get(&addr);
+        let sender_ref = client_storage.get(&sender_addr);
+
+        if let (Some(receiver_ref), Some(sender_ref)) = (receiver_ref, sender_ref) {
+            let mut receivers = sender_ref.get_receivers().write();
+            receivers.insert(addr, Arc::clone(receiver_ref));
         }
     }
 }
@@ -311,16 +205,11 @@ impl Handler<MediaAddrMessage> for ClientActor {
     fn handle(
         &mut self,
         MediaAddrMessage(addr, media): MediaAddrMessage,
-        ctx: &mut Context<Self>,
+        _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        if let Some(c) = self.client_storage.get_mut(&addr).cloned() {
-            ctx.spawn(
-                async move {
-                    let mut c_media = c.get_media().write().await;
-                    *c_media = Some(media);
-                }
-                .into_actor(self),
-            );
+        if let Some(c) = self.client_storage.read().get(&addr) {
+            let mut c_media = c.get_media().write();
+            *c_media = Some(media);
         }
     }
 }
@@ -329,19 +218,4 @@ struct DeleteMessage(SocketAddr);
 
 impl Message for DeleteMessage {
     type Result = bool;
-}
-
-#[inline]
-const fn calculate_payload(marker: bool, payload: u8) -> u8 {
-    payload | ((marker as u8) << 7)
-}
-
-#[inline]
-fn clone_message<'a>(message: &[u8], allocator: &'a Bump) -> Vec<'a, u8> {
-    let mut temp = Vec::with_capacity_in(message.len(), &allocator);
-    unsafe {
-        temp.set_len(message.len());
-    }
-    temp.copy_from_slice(message);
-    temp
 }

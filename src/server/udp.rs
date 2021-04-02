@@ -1,3 +1,5 @@
+use crate::client::clients::ClientsRefStorage;
+use crate::client::rtc_actor::RtcActor;
 use crate::rtp::core::RtpHeader;
 use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
@@ -23,6 +25,7 @@ use tokio::{net::UdpSocket, time::Duration};
 pub struct UdpRecv {
     send: Addr<UdpSend>,
     dtls: Addr<ClientActor>,
+    rtc: Addr<RtcActor>,
     data: Arc<ServerData>,
     sessions: SessionsStorage,
     media_sessions: MediaUserStorage,
@@ -37,6 +40,7 @@ impl UdpRecv {
         recv: Arc<UdpSocket>,
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
+        rtc: Addr<RtcActor>,
         data: Arc<ServerData>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
@@ -69,6 +73,7 @@ impl UdpRecv {
                 send,
                 dtls,
                 data,
+                rtc,
                 sessions: HashMap::new(),
                 media_sessions: HashMap::new(),
             }
@@ -132,13 +137,7 @@ impl Handler<WebRtcRequest> for UdpRecv {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                ctx.spawn(
-                    self.dtls
-                        .send(WebRtcRequest::Rtc(message, addr))
-                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
-                        .map(|_| ())
-                        .into_actor(self),
-                );
+                self.rtc.do_send(WebRtcRequest::Rtc(message, addr));
             }
             WebRtcRequest::Unknown => warn!("recv unknown request"),
         }
@@ -277,8 +276,14 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
     let data = Arc::new(ServerData { meta, crypto });
 
     let udp_send = UdpSend::new(server.clone(), Arc::clone(&data));
-    let dtls = ClientActor::new(Arc::clone(&data.crypto.ssl_acceptor), udp_send.clone());
-    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, data);
+    let client_storage = Arc::new(ClientsRefStorage::default());
+    let dtls = ClientActor::new(
+        Arc::clone(&data.crypto.ssl_acceptor),
+        udp_send.clone(),
+        Arc::clone(&client_storage),
+    );
+    let rtc = RtcActor::new(udp_send.clone(), Arc::clone(&client_storage));
+    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, rtc, data);
 
     (udp_recv, udp_send)
 }

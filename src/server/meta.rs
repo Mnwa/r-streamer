@@ -1,7 +1,9 @@
+use smol_str::SmolStr;
+
 #[derive(Clone)]
 pub struct ServerMeta {
-    pub user: String,
-    pub password: String,
+    pub user: SmolStr,
+    pub password: SmolStr,
 }
 
 impl ServerMeta {
@@ -14,7 +16,7 @@ impl ServerMeta {
     }
 }
 
-fn rand_string<R: rand::Rng>(rng: &mut R, size: usize) -> String {
+fn rand_string<R: rand::Rng>(rng: &mut R, size: usize) -> SmolStr {
     const RAND_CHAR_TABLE: &[u8; 62] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -23,5 +25,5 @@ fn rand_string<R: rand::Rng>(rng: &mut R, size: usize) -> String {
     for _ in 0..size {
         s.push(RAND_CHAR_TABLE[rng.gen_range(0..62)] as char);
     }
-    s
+    s.into()
 }

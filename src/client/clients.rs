@@ -6,6 +6,7 @@ use crate::{
 use futures::channel::mpsc::SendError;
 use openssl::error::ErrorStack;
 use openssl::ssl::Error as SslError;
+use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
@@ -14,17 +15,17 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex as MutexAsync;
 use tokio_openssl::SslStream;
 
 #[derive(Debug)]
 pub enum ClientState {
     New(ClientSslPackets),
-    Connected(SslStream<ClientSslPackets>, SrtpTransport),
+    Connected(SslStream<ClientSslPackets>),
     Shutdown,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ClientStateStatus {
     New,
     Connected,
@@ -35,7 +36,7 @@ impl ClientState {
     pub fn get_status(&self) -> ClientStateStatus {
         match self {
             ClientState::New(_) => ClientStateStatus::New,
-            ClientState::Connected(_, _) => ClientStateStatus::Connected,
+            ClientState::Connected(_) => ClientStateStatus::Connected,
             ClientState::Shutdown => ClientStateStatus::Shutdown,
         }
     }
@@ -99,26 +100,30 @@ impl From<SslError> for ClientError {
     }
 }
 
-pub type ClientsRefStorage = HashMap<SocketAddr, ClientSafeRef>;
+pub type ClientsRefStorage = Arc<RwLock<HashMap<SocketAddr, ClientSafeRef>>>;
 
 pub type ClientSafeRef = Arc<Client>;
 
 pub struct Client {
-    state: Mutex<ClientState>,
+    state: MutexAsync<ClientState>,
     channels: ClientSslPacketsChannels,
     media: RwLock<Option<MediaList>>,
-    receivers: RwLock<ClientsRefStorage>,
+    srtp: Mutex<Option<SrtpTransport>>,
+    receivers: ClientsRefStorage,
     is_deleted: AtomicBool,
     dtls_connected: AtomicBool,
 }
 impl Client {
-    pub fn get_state(&self) -> &Mutex<ClientState> {
+    pub fn get_state(&self) -> &MutexAsync<ClientState> {
         &self.state
+    }
+    pub fn get_srtp(&self) -> &Mutex<Option<SrtpTransport>> {
+        &self.srtp
     }
     pub fn get_media(&self) -> &RwLock<Option<MediaList>> {
         &self.media
     }
-    pub fn get_receivers(&self) -> &RwLock<ClientsRefStorage> {
+    pub fn get_receivers(&self) -> &ClientsRefStorage {
         &self.receivers
     }
 
@@ -150,12 +155,13 @@ impl Default for Client {
     fn default() -> Self {
         let (stream, channels) = ClientSslPackets::new();
         Client {
-            state: Mutex::new(ClientState::New(stream)),
+            state: MutexAsync::new(ClientState::New(stream)),
             channels,
             media: Default::default(),
             receivers: Default::default(),
             is_deleted: Default::default(),
             dtls_connected: Default::default(),
+            srtp: Default::default(),
         }
     }
 }
