@@ -6,7 +6,7 @@ use crate::{
 };
 use futures::prelude::*;
 use std::ops::DerefMut;
-use tokio::prelude::*;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn push_dtls(
     incoming_writer: &mut IncomingWriter,

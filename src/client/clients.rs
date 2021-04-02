@@ -4,6 +4,8 @@ use crate::{
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
 use futures::channel::mpsc::SendError;
+use openssl::error::ErrorStack;
+use openssl::ssl::Error as SslError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
@@ -46,6 +48,8 @@ pub enum ClientError {
     AlreadyConnected,
     Read(std::io::Error),
     SrtpParseError(ErrorParse),
+    SslErrorStack(ErrorStack),
+    SslError(SslError),
 }
 
 impl Display for ClientError {
@@ -56,6 +60,8 @@ impl Display for ClientError {
             ClientError::AlreadyConnected => write!(f, "Client already connected"),
             ClientError::Read(e) => write!(f, "Read: {}", e),
             ClientError::SrtpParseError(e) => write!(f, "Srtp parsing error: {}", e),
+            ClientError::SslErrorStack(e) => write!(f, "Ssl stack error: {}", e),
+            ClientError::SslError(e) => write!(f, "Ssl error: {}", e),
         }
     }
 }
@@ -80,6 +86,16 @@ impl From<std::io::ErrorKind> for ClientError {
 impl From<ErrorParse> for ClientError {
     fn from(e: ErrorParse) -> Self {
         ClientError::SrtpParseError(e)
+    }
+}
+impl From<ErrorStack> for ClientError {
+    fn from(e: ErrorStack) -> Self {
+        ClientError::SslErrorStack(e)
+    }
+}
+impl From<SslError> for ClientError {
+    fn from(e: SslError) -> Self {
+        ClientError::SslError(e)
     }
 }
 

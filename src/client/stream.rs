@@ -12,8 +12,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::io::{AsyncRead, AsyncWrite, Error, ReadBuf};
 use tokio::sync::Mutex;
-use tokio::{io::Error, prelude::*};
 
 pub struct ClientSslPackets {
     incoming_reader: IncomingReader, // read here to decrypt request
@@ -91,19 +91,16 @@ impl AsyncRead for ClientSslPackets {
     fn poll_read<'a>(
         mut self: Pin<&'a mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         if self.incoming_reader.is_terminated() {
             return Poll::Ready(Err(std::io::ErrorKind::ConnectionAborted.into()));
         }
 
         match self.incoming_reader.poll_next_unpin(cx) {
             Poll::Ready(Some(message)) => {
-                if buf.len() < message.len() {
-                    return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()));
-                }
-                buf[0..message.len()].copy_from_slice(&message);
-                Poll::Ready(Ok(message.len()))
+                buf.put_slice(&message);
+                Poll::Ready(Ok(()))
             }
             Poll::Ready(None) => Poll::Ready(Err(std::io::ErrorKind::ConnectionAborted.into())),
             Poll::Pending => Poll::Pending,

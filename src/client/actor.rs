@@ -23,7 +23,6 @@ use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use openssl::ssl::SslAcceptor;
 use std::ops::DerefMut;
-use std::time::Instant;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
 
@@ -122,7 +121,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                let start = Instant::now();
                 let udp_send = self.udp_send.clone();
                 let client_ref = Arc::clone(self.client_storage.entry(addr).or_default());
                 let is_rtcp = is_rtcp(&message);
@@ -183,8 +181,6 @@ impl Handler<WebRtcRequest> for ClientActor {
                                                     .and_then(|media| media.get_id(codec))
                                                     .copied()
                                             });
-
-                                            println!("{:?}, {:?}", payload, codec);
 
                                             if let Some(payload) = payload {
                                                 message[1] =

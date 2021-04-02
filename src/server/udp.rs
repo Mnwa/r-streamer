@@ -11,17 +11,14 @@ use crate::{
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
 use actix::prelude::*;
-use futures::task::Poll;
-use futures::{FutureExt, StreamExt, TryFutureExt};
+use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use smallvec::SmallVec;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
-use tokio::macros::support::Pin;
-use tokio::{
-    net::udp::{RecvHalf, SendHalf},
-    net::UdpSocket,
-    time::Duration,
+use std::{
+    collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc, task::Poll,
+    time::SystemTime,
 };
+use tokio::{net::UdpSocket, time::Duration};
 
 pub struct UdpRecv {
     send: Addr<UdpSend>,
@@ -37,7 +34,7 @@ impl Actor for UdpRecv {
 
 impl UdpRecv {
     pub fn new(
-        recv: RecvHalf,
+        recv: Arc<UdpSocket>,
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
         data: Arc<ServerData>,
@@ -45,7 +42,7 @@ impl UdpRecv {
         UdpRecv::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
 
-            ctx.add_message_stream(futures::stream::unfold(recv, |mut recv| async move {
+            ctx.add_message_stream(futures::stream::unfold(recv, |recv| async move {
                 let mut message = DataPacket::with_capacity(1200);
                 unsafe { message.set_len(1200) }
 
@@ -63,7 +60,10 @@ impl UdpRecv {
                 }
             }));
 
-            ctx.add_stream(tokio::time::interval(Duration::from_secs(60)).map(|_| ClearData));
+            ctx.add_stream(futures::stream::unfold(ClearData, |message| async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Some((message, message))
+            }));
 
             UdpRecv {
                 send,
@@ -190,18 +190,15 @@ impl Handler<MediaUserMessage> for UdpRecv {
 }
 
 pub struct UdpSend {
-    send: Arc<SendHalf>,
+    send: Arc<UdpSocket>,
     data: Arc<ServerData>,
 }
 
 impl UdpSend {
-    pub fn new(send: SendHalf, data: Arc<ServerData>) -> Addr<Self> {
+    pub fn new(send: Arc<UdpSocket>, data: Arc<ServerData>) -> Addr<Self> {
         Self::create(|ctx| {
             ctx.set_mailbox_capacity(1024);
-            Self {
-                send: Arc::new(send),
-                data,
-            }
+            Self { send, data }
         })
     }
 }
@@ -274,15 +271,14 @@ impl Handler<WebRtcRequest> for UdpSend {
 }
 
 pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
-    let server = UdpSocket::bind(addr).await.expect("udp must be up");
+    let server = Arc::new(UdpSocket::bind(addr).await.expect("udp must be up"));
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
     let data = Arc::new(ServerData { meta, crypto });
 
-    let (recv, send) = server.split();
-    let udp_send = UdpSend::new(send, Arc::clone(&data));
+    let udp_send = UdpSend::new(server.clone(), Arc::clone(&data));
     let dtls = ClientActor::new(Arc::clone(&data.crypto.ssl_acceptor), udp_send.clone());
-    let udp_recv = UdpRecv::new(recv, udp_send.clone(), dtls, data);
+    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, data);
 
     (udp_recv, udp_send)
 }
@@ -325,19 +321,20 @@ pub struct ServerData {
 #[rtype(result = "ServerData")]
 pub struct ServerDataRequest;
 
+#[derive(Copy, Clone, Debug)]
 struct ClearData;
 
 impl Message for ClearData {
     type Result = ();
 }
 
-struct UdpMassSender(Arc<SendHalf>, SocketAddr, DataPacket);
+struct UdpMassSender(Arc<UdpSocket>, SocketAddr, DataPacket);
 
 impl Future for UdpMassSender {
     type Output = std::io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        self.0.as_ref().as_ref().poll_send_to(cx, &self.2, &self.1)
+        self.0.as_ref().poll_send_to(cx, &self.2, self.1)
     }
 }
 

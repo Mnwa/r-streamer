@@ -58,9 +58,11 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(debug_assertions)]
 #[get("/")]
-async fn index(req: HttpRequest) -> Result<NamedFile> {
+fn index(req: HttpRequest) -> HttpResponse {
     info!("dev: serving example index HTML to {:?}", req.peer_addr());
-    Ok(NamedFile::open("public/index.html")?)
+    NamedFile::open("public/index.html")
+        .expect("file")
+        .into_response(&req)
 }
 
 #[cfg(not(debug_assertions))]
