@@ -15,7 +15,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::client::sessions::SessionStorageItem;
 use smol_str::SmolStr;
+use std::time::SystemTime;
 use webrtc_sdp::attribute_type::SdpAttribute::{IceOptions, RtcpMux};
 use webrtc_sdp::attribute_type::SdpAttributeType::{Recvonly, Sendonly};
 use webrtc_sdp::{
@@ -80,7 +82,14 @@ pub async fn generate_streamer_response(
         .map(|session| {
             (
                 MediaUserMessage(session.get_client(), req.media.clone().into()),
-                SessionMessage(session, group_id),
+                SessionMessage(
+                    session,
+                    SessionStorageItem {
+                        group_id,
+                        ttl: SystemTime::now(),
+                        is_sender: req.get_attribute(Sendonly).is_some(),
+                    },
+                ),
             )
         })
         .then(|(media_message, session_message)| {

@@ -110,6 +110,7 @@ pub struct Client {
     media: RwLock<Option<MediaList>>,
     srtp: Mutex<Option<SrtpTransport>>,
     receivers: ClientsRefStorage,
+    sender_addr: RwLock<Option<SocketAddr>>,
     is_deleted: AtomicBool,
     dtls_connected: AtomicBool,
 }
@@ -125,6 +126,10 @@ impl Client {
     }
     pub fn get_receivers(&self) -> &ClientsRefStorage {
         &self.receivers
+    }
+
+    pub fn get_sender_addr(&self) -> &RwLock<Option<SocketAddr>> {
+        &self.sender_addr
     }
 
     pub fn delete(&self) {
@@ -158,10 +163,11 @@ impl Default for Client {
             state: MutexAsync::new(ClientState::New(stream)),
             channels,
             media: Default::default(),
+            srtp: Default::default(),
             receivers: Default::default(),
+            sender_addr: Default::default(),
             is_deleted: Default::default(),
             dtls_connected: Default::default(),
-            srtp: Default::default(),
         }
     }
 }

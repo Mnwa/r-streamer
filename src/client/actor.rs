@@ -179,22 +179,37 @@ impl Handler<GroupId> for ClientActor {
 
     fn handle(
         &mut self,
-        GroupId(group_id, addr): GroupId,
+        GroupId(group_id, addr, is_sender): GroupId,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        let sender_addr = self.groups.insert_or_get_sender(group_id, addr);
-        if sender_addr == addr {
+        let last_sender_addr = self.groups.insert_or_get_sender(group_id, addr, is_sender);
+        if last_sender_addr == addr && !is_sender {
             return;
         }
 
         let client_storage = &*self.client_storage.read();
 
         let receiver_ref = client_storage.get(&addr);
-        let sender_ref = client_storage.get(&sender_addr);
+        let sender_ref = client_storage.get(&last_sender_addr);
 
         if let (Some(receiver_ref), Some(sender_ref)) = (receiver_ref, sender_ref) {
             let mut receivers = sender_ref.get_receivers().write();
-            receivers.insert(addr, Arc::clone(receiver_ref));
+            if last_sender_addr != addr && is_sender {
+                *receivers = sender_ref
+                    .get_receivers()
+                    .read()
+                    .clone()
+                    .into_iter()
+                    .filter(|(recv_addr, _)| *recv_addr != addr)
+                    .map(|(recv_addr, recv_client)| {
+                        *recv_client.get_sender_addr().write() = Some(addr);
+                        (recv_addr, recv_client)
+                    })
+                    .collect();
+            } else {
+                *receiver_ref.get_sender_addr().write() = Some(last_sender_addr);
+                receivers.insert(addr, Arc::clone(receiver_ref));
+            }
         }
     }
 }

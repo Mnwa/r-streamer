@@ -1,7 +1,7 @@
 use actix::Message;
+use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::time::SystemTime;
-use smol_str::SmolStr;
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct Session {
@@ -22,10 +22,17 @@ impl Session {
     }
 }
 
-pub struct SessionMessage(pub Session, pub usize);
+pub struct SessionMessage(pub Session, pub SessionStorageItem);
 
 impl Message for SessionMessage {
     type Result = bool;
 }
 
-pub type SessionsStorage = HashMap<Session, (usize, SystemTime)>;
+pub type SessionsStorage = HashMap<Session, SessionStorageItem>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SessionStorageItem {
+    pub group_id: usize,
+    pub ttl: SystemTime,
+    pub is_sender: bool,
+}

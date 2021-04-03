@@ -1,5 +1,6 @@
 use crate::client::clients::ClientsRefStorage;
 use crate::client::rtc_actor::RtcActor;
+use crate::client::sessions::SessionStorageItem;
 use crate::rtp::core::RtpHeader;
 use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
@@ -16,10 +17,7 @@ use actix::prelude::*;
 use futures::{FutureExt, TryFutureExt};
 use log::{info, warn};
 use smallvec::SmallVec;
-use std::{
-    collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc, task::Poll,
-    time::SystemTime,
-};
+use std::{collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc, task::Poll};
 use tokio::{net::UdpSocket, time::Duration};
 
 pub struct UdpRecv {
@@ -97,10 +95,12 @@ impl Handler<WebRtcRequest> for UdpRecv {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
-                if let Some((group_id, ttl)) = self.sessions.get_mut(&session) {
-                    *ttl = SystemTime::now();
-                    let group_id = *group_id;
-
+                if let Some(SessionStorageItem {
+                    group_id,
+                    is_sender,
+                    ..
+                }) = self.sessions.get_mut(&session).copied()
+                {
                     let media = self
                         .media_sessions
                         .get(&req.remote_user)
@@ -119,7 +119,7 @@ impl Handler<WebRtcRequest> for UdpRecv {
                     ctx.spawn(
                         futures::future::try_join(
                             self.send.send(WebRtcRequest::Stun(req, addr)),
-                            self.dtls.send(GroupId(group_id, addr)),
+                            self.dtls.send(GroupId(group_id, addr, is_sender)),
                         )
                         .inspect_err(|e| warn!("dtls or udp send err: {:?}", e))
                         .map(|_| ())
@@ -149,11 +149,11 @@ impl StreamHandler<ClearData> for UdpRecv {
         let sessions_to_remove: Vec<Session> = self
             .sessions
             .iter()
-            .filter(|(_, (_, time))| match time.elapsed() {
+            .filter(|(_, SessionStorageItem { ttl, .. })| match ttl.elapsed() {
                 Ok(d) => d > Duration::from_secs(60),
                 Err(_e) => false,
             })
-            .map(|(s, (_, _))| s.clone())
+            .map(|(s, _)| s.clone())
             .collect();
 
         sessions_to_remove.into_iter().for_each(|s| {
@@ -168,10 +168,10 @@ impl Handler<SessionMessage> for UdpRecv {
 
     fn handle(
         &mut self,
-        SessionMessage(session, id): SessionMessage,
+        SessionMessage(session, item): SessionMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.sessions.insert(session, (id, SystemTime::now()));
+        self.sessions.insert(session, item);
         true
     }
 }

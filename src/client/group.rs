@@ -9,8 +9,17 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn insert_or_get_sender(&mut self, group_id: usize, addr: SocketAddr) -> SocketAddr {
-        *self.groups_storage.entry(group_id).or_insert(addr)
+    pub fn insert_or_get_sender(
+        &mut self,
+        group_id: usize,
+        addr: SocketAddr,
+        is_sender: bool,
+    ) -> SocketAddr {
+        if is_sender {
+            self.groups_storage.insert(group_id, addr).unwrap_or(addr)
+        } else {
+            *self.groups_storage.entry(group_id).or_insert(addr)
+        }
     }
 
     pub fn remove_sender(&mut self, addr: SocketAddr) {
@@ -19,7 +28,7 @@ impl Group {
     }
 }
 
-pub struct GroupId(pub usize, pub SocketAddr);
+pub struct GroupId(pub usize, pub SocketAddr, pub bool);
 
 impl Message for GroupId {
     type Result = ();

@@ -69,47 +69,64 @@ impl Handler<WebRtcRequest> for RtcActor {
 
             let receivers = client_ref.get_receivers().read();
 
-            if receivers.is_empty() {
-                println!("empty receivers, {} {}", is_rtcp, addr)
-            }
-
-            receivers
-                .par_iter()
-                .filter(|(_, recv)| !recv.is_deleted())
-                .try_for_each(|(r_addr, recv)| {
+            if is_rtcp && receivers.is_empty() {
+                let result = client_ref.get_sender_addr().read().and_then(|sender_addr| {
+                    let sender = Arc::clone(self.client_storage.read().get(&sender_addr)?);
+                    let mut state = sender.get_srtp().lock();
+                    let srtp = state.as_mut()?;
                     let mut message = message.clone();
-                    let mut state = recv.get_srtp().lock();
+                    Some(
+                        srtp.protect_rtcp(&mut message)
+                            .map(|_| (sender_addr, message)),
+                    )
+                });
 
-                    let message = if let Some(srtp) = &mut *state {
-                        if is_rtcp {
-                            srtp.protect_rtcp(&mut message)?;
-                        } else {
-                            srtp.protect(&mut message)?;
+                match result {
+                    Some(Ok((sender_addr, message))) => {
+                        udp_send.do_send(WebRtcRequest::Rtc(message, sender_addr));
+                    }
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(()),
+                }
+            } else {
+                receivers
+                    .par_iter()
+                    .filter(|(_, recv)| !recv.is_deleted())
+                    .try_for_each(|(r_addr, recv)| {
+                        let mut message = message.clone();
+                        let mut state = recv.get_srtp().lock();
 
-                            if let Some(codec) = codec.as_ref() {
-                                let media = recv.get_media().read();
-                                if let Some(payload) = media
-                                    .as_ref()
-                                    .and_then(|media| media.get_id(codec))
-                                    .copied()
-                                {
-                                    message[1] = calculate_payload(rtp_header.marker, payload);
+                        let message = if let Some(srtp) = state.as_mut() {
+                            if is_rtcp {
+                                srtp.protect_rtcp(&mut message)?;
+                            } else {
+                                srtp.protect(&mut message)?;
+
+                                if let Some(codec) = codec.as_ref() {
+                                    let media = recv.get_media().read();
+                                    if let Some(payload) = media
+                                        .as_ref()
+                                        .and_then(|media| media.get_id(codec))
+                                        .copied()
+                                    {
+                                        message[1] = calculate_payload(rtp_header.marker, payload);
+                                    }
                                 }
                             }
-                        }
 
-                        message
-                    } else {
-                        return Err(ErrorParse::ClientNotReady(addr));
-                    };
+                            message
+                        } else {
+                            return Err(ErrorParse::ClientNotReady(addr));
+                        };
 
-                    udp_send.do_send(WebRtcRequest::Rtc(
-                        DataPacket::from(message.as_slice()),
-                        *r_addr,
-                    ));
+                        udp_send.do_send(WebRtcRequest::Rtc(
+                            DataPacket::from(message.as_slice()),
+                            *r_addr,
+                        ));
 
-                    Ok(())
-                })?;
+                        Ok(())
+                    })?;
+            }
 
             Ok(())
         });
