@@ -71,6 +71,7 @@ impl Handler<WebRtcRequest> for RtcActor {
 
             drop(state);
 
+            // не забыть в будущем подменять timestamp для rtcp
             if !is_rtcp {
                 let mut rtp_runtime = client_ref.get_rtp_runtime().lock();
 
