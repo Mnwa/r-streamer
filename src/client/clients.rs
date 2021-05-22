@@ -7,6 +7,8 @@ use futures::channel::mpsc::SendError;
 use openssl::error::ErrorStack;
 use openssl::ssl::Error as SslError;
 use parking_lot::{Mutex, RwLock};
+use rand::Rng;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
@@ -104,11 +106,32 @@ pub type ClientsRefStorage = Arc<RwLock<HashMap<SocketAddr, ClientSafeRef>>>;
 
 pub type ClientSafeRef = Arc<Client>;
 
+#[derive(Debug, Copy, Clone)]
+pub struct ClientRtpRuntime {
+    pub client_ts: Option<NonZeroU32>,
+    pub server_ts: u32,
+    pub client_sequence: Option<NonZeroU16>,
+    pub server_sequence: u16,
+}
+
+impl Default for ClientRtpRuntime {
+    fn default() -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            server_ts: rng.gen_range(1..100000),
+            server_sequence: rng.gen_range(1..10000),
+            client_ts: Default::default(),
+            client_sequence: Default::default(),
+        }
+    }
+}
+
 pub struct Client {
     state: MutexAsync<ClientState>,
     channels: ClientSslPacketsChannels,
     media: RwLock<Option<MediaList>>,
     srtp: Mutex<Option<SrtpTransport>>,
+    rtp_runtime: Mutex<ClientRtpRuntime>,
     receivers: ClientsRefStorage,
     sender_addr: RwLock<Option<SocketAddr>>,
     is_deleted: AtomicBool,
@@ -126,6 +149,9 @@ impl Client {
     }
     pub fn get_receivers(&self) -> &ClientsRefStorage {
         &self.receivers
+    }
+    pub fn get_rtp_runtime(&self) -> &Mutex<ClientRtpRuntime> {
+        &self.rtp_runtime
     }
 
     pub fn get_sender_addr(&self) -> &RwLock<Option<SocketAddr>> {
@@ -168,6 +194,7 @@ impl Default for Client {
             sender_addr: Default::default(),
             is_deleted: Default::default(),
             dtls_connected: Default::default(),
+            rtp_runtime: Default::default(),
         }
     }
 }

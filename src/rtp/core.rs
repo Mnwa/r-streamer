@@ -1,4 +1,5 @@
 use crate::rtp::srtp::ErrorParse;
+use byteorder::ByteOrder;
 
 #[inline]
 pub fn is_rtcp(buf: &[u8]) -> bool {
@@ -16,6 +17,8 @@ pub fn is_rtcp(buf: &[u8]) -> bool {
 pub struct RtpHeader {
     pub marker: bool,
     pub payload: u8,
+    pub sequence: u16,
+    pub timestamp: u32,
 }
 
 impl RtpHeader {
@@ -38,9 +41,14 @@ impl RtpHeader {
             return Err(ErrorParse::UnsupportedFormat);
         }
 
+        let sequence = byteorder::NetworkEndian::read_u16(&buf[2..4]);
+        let timestamp = byteorder::NetworkEndian::read_u32(&buf[4..8]);
+
         Ok(RtpHeader {
             marker: (buf[1] >> 7) == 1,
             payload: buf[1] & 0b01111111,
+            sequence,
+            timestamp,
         })
     }
 }

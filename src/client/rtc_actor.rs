@@ -3,8 +3,10 @@ use crate::rtp::core::{is_rtcp, RtpHeader};
 use crate::rtp::srtp::ErrorParse;
 use crate::server::udp::{DataPacket, UdpSend, WebRtcRequest};
 use actix::prelude::*;
+use byteorder::ByteOrder;
 use log::warn;
 use rayon::prelude::*;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
 
 pub struct RtcActor {
@@ -44,7 +46,7 @@ impl Handler<WebRtcRequest> for RtcActor {
         let res: Result<(), ErrorParse> = RtpHeader::from_buf(&message).and_then(|rtp_header| {
             let mut state = client_ref.get_srtp().lock();
 
-            let codec = if let Some(srtp) = &mut *state {
+            let codec_n_frequency = if let Some(srtp) = &mut *state {
                 if is_rtcp {
                     srtp.unprotect_rtcp(&mut message)?;
                     None
@@ -56,16 +58,37 @@ impl Handler<WebRtcRequest> for RtcActor {
                     }
 
                     let media = client_ref.get_media().read();
-                    media
-                        .as_ref()
-                        .and_then(|media| media.get_name(&rtp_header.payload))
-                        .cloned()
+                    media.as_ref().and_then(|media| {
+                        Some((
+                            media.get_name(&rtp_header.payload).cloned()?,
+                            media.get_frequency(&rtp_header.payload).copied()?,
+                        ))
+                    })
                 }
             } else {
                 return Err(ErrorParse::ClientNotReady(addr));
             };
 
             drop(state);
+
+            if !is_rtcp {
+                let mut rtp_runtime = client_ref.get_rtp_runtime().lock();
+
+                let client_diff = match rtp_runtime.client_ts {
+                    Some(client_ts) => rtp_header.timestamp.saturating_sub(client_ts.get()),
+                    None => 0,
+                };
+                rtp_runtime.client_sequence = NonZeroU16::new(rtp_header.sequence);
+                rtp_runtime.client_ts = NonZeroU32::new(rtp_header.timestamp);
+                rtp_runtime.server_sequence += 1;
+                rtp_runtime.server_ts += client_diff;
+
+                replace_sequence_n_timestamp(
+                    &mut message,
+                    rtp_runtime.server_sequence,
+                    rtp_runtime.server_ts,
+                );
+            }
 
             let receivers = client_ref.get_receivers().read();
 
@@ -102,7 +125,7 @@ impl Handler<WebRtcRequest> for RtcActor {
                             } else {
                                 srtp.protect(&mut message)?;
 
-                                if let Some(codec) = codec.as_ref() {
+                                if let Some((codec, _frequency)) = codec_n_frequency.as_ref() {
                                     let media = recv.get_media().read();
                                     if let Some(payload) = media
                                         .as_ref()
@@ -142,4 +165,9 @@ impl Handler<WebRtcRequest> for RtcActor {
 #[inline]
 const fn calculate_payload(marker: bool, payload: u8) -> u8 {
     payload | ((marker as u8) << 7)
+}
+
+fn replace_sequence_n_timestamp(buf: &mut [u8], sequence: u16, timestamp: u32) {
+    byteorder::NetworkEndian::write_u16(&mut buf[2..4], sequence);
+    byteorder::NetworkEndian::write_u32(&mut buf[4..8], timestamp);
 }
