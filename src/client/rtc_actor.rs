@@ -84,7 +84,7 @@ impl Handler<WebRtcRequest> for RtcActor {
                     } else {
                         srtp.unprotect(&mut message)?;
 
-                        if rtp_header.payload == 111 {
+                        if cfg!(debug_assertions) && rtp_header.payload == 111 {
                             return Err(ErrorParse::UnsupportedFormat);
                         }
                     }
