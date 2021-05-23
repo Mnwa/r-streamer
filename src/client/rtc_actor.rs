@@ -84,6 +84,7 @@ impl Handler<WebRtcRequest> for RtcActor {
                     } else {
                         srtp.unprotect(&mut message)?;
 
+                        // disable audio stream on debug builds
                         if cfg!(debug_assertions) && rtp_header.payload == 111 {
                             return Err(ErrorParse::UnsupportedFormat);
                         }
