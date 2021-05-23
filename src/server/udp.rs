@@ -1,3 +1,11 @@
+use crate::client::clients::ClientsRefStorage;
+use crate::client::rtc_actor::RtcActor;
+use crate::client::sessions::SessionStorageItem;
+use crate::rtp::core::RtpHeader;
+use crate::rtp::jitter::{
+    GetOrStoreJitterBuffer, GetOrStoreJitterBufferResponse, JitterControlActor,
+};
+use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
         actor::ClientActor,
@@ -5,64 +13,78 @@ use crate::{
         sessions::{Session, SessionMessage, SessionsStorage},
     },
     dtls::is_dtls,
-    rtp::core::{is_rtcp, parse_rtp},
     server::{crypto::Crypto, meta::ServerMeta},
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
+use actix::dev::MessageResponse;
 use actix::prelude::*;
-use log::{info, warn};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
-use tokio::{
-    net::udp::{RecvHalf, SendHalf},
-    net::UdpSocket,
-    stream::StreamExt,
-    sync::Mutex,
-    time::Duration,
-};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use log::warn;
+use smallvec::SmallVec;
+use std::{collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc, task::Poll};
+use tokio::{net::UdpSocket, time::Duration};
 
 pub struct UdpRecv {
-    send: Arc<Addr<UdpSend>>,
-    dtls: Arc<Addr<ClientActor>>,
+    send: Addr<UdpSend>,
+    dtls: Addr<ClientActor>,
+    rtc: Addr<RtcActor>,
+    jitter_control: Addr<JitterControlActor>,
     data: Arc<ServerData>,
     sessions: SessionsStorage,
+    media_sessions: MediaUserStorage,
 }
 
 impl Actor for UdpRecv {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        warn!("udp recv actor died")
+    }
 }
 
 impl UdpRecv {
     pub fn new(
-        recv: RecvHalf,
-        send: Arc<Addr<UdpSend>>,
-        dtls: Arc<Addr<ClientActor>>,
+        recv: Arc<UdpSocket>,
+        send: Addr<UdpSend>,
+        dtls: Addr<ClientActor>,
+        jitter_control: Addr<JitterControlActor>,
+        rtc: Addr<RtcActor>,
         data: Arc<ServerData>,
     ) -> Addr<UdpRecv> {
         UdpRecv::create(|ctx| {
-            let stream = futures::stream::unfold(recv, |mut server| async move {
-                let mut message_buf: Vec<u8> = vec![0; 0x10000];
+            ctx.set_mailbox_capacity(1024);
 
-                match server.recv_from(&mut message_buf).await {
-                    Ok((n, addr_from)) => {
-                        message_buf.truncate(n);
-                        Some(((message_buf, addr_from), server))
+            ctx.add_message_stream(futures::stream::unfold(recv, |recv| async move {
+                let mut message = DataPacket::with_capacity(1200);
+                unsafe { message.set_len(1200) }
+
+                match recv.recv_from(&mut message).await {
+                    Ok((n, addr)) => {
+                        message.truncate(n);
+                        let message = WebRtcRequest::from((message, addr));
+
+                        Some((message, recv))
                     }
                     Err(err) => {
                         warn!("could not receive UDP message: {}", err);
                         None
                     }
                 }
-            })
-            .map(WebRtcRequest::from);
+            }));
 
-            ctx.add_stream(stream);
-            ctx.add_stream(tokio::time::interval(Duration::from_secs(60)).map(|_| ClearData));
+            ctx.add_stream(futures::stream::unfold(ClearData, |message| async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Some((message, message))
+            }));
 
             UdpRecv {
                 send,
                 dtls,
                 data,
+                rtc,
+                jitter_control,
                 sessions: HashMap::new(),
+                media_sessions: HashMap::new(),
             }
         })
     }
@@ -76,60 +98,89 @@ impl Handler<ServerDataRequest> for UdpRecv {
     }
 }
 
-impl StreamHandler<WebRtcRequest> for UdpRecv {
+impl Handler<WebRtcRequest> for UdpRecv {
+    type Result = ();
+
     fn handle(&mut self, item: WebRtcRequest, ctx: &mut Context<Self>) {
         match item {
             WebRtcRequest::Stun(req, addr) => {
                 let session = Session::new(req.server_user.clone(), req.remote_user.clone());
 
-                if let Some((group_id, ttl)) = self.sessions.get_mut(&session) {
-                    *ttl = SystemTime::now();
-                    let group_id = *group_id;
-                    let udp_send = Arc::clone(&self.send);
-                    let dtls = Arc::clone(&self.dtls);
+                if let Some(SessionStorageItem {
+                    group_id,
+                    is_sender,
+                    ..
+                }) = self.sessions.get_mut(&session).copied()
+                {
+                    let media = self
+                        .media_sessions
+                        .get(&req.remote_user)
+                        .map(MediaList::clone);
+
+                    if let Some(media) = media {
+                        ctx.spawn(
+                            self.dtls
+                                .send(MediaAddrMessage(addr, media))
+                                .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                                .map(|_| ())
+                                .into_actor(self),
+                        );
+                    }
+
                     ctx.spawn(
-                        async move {
-                            let resp = futures::future::join(
-                                udp_send.send(WebRtcRequest::Stun(req, addr)),
-                                dtls.send(GroupId(group_id, addr)),
-                            )
-                            .await;
-
-                            if let Err(e) = resp.0 {
-                                warn!("udp recv to udp send: {:#?}", e)
-                            }
-
-                            if let Err(e) = resp.1 {
-                                warn!("udp recv to dtls: {:#?}", e)
-                            }
-                        }
+                        futures::future::try_join(
+                            self.send.send(WebRtcRequest::Stun(req, addr)),
+                            self.dtls.send(GroupId(group_id, addr, is_sender)),
+                        )
+                        .inspect_err(|e| warn!("dtls or udp send err: {:?}", e))
+                        .map(|_| ())
                         .into_actor(self),
                     );
                 }
             }
             WebRtcRequest::Dtls(message, addr) => {
-                let dtls = Arc::clone(&self.dtls);
                 ctx.spawn(
-                    async move {
-                        if let Err(e) = dtls.send(WebRtcRequest::Dtls(message, addr)).await {
-                            warn!("udp recv to dtls: {:#?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    self.dtls
+                        .send(WebRtcRequest::Dtls(message, addr))
+                        .inspect_err(|e| warn!("dtls send err: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                let dtls = Arc::clone(&self.dtls);
-                ctx.spawn(
+                let rtc_addr = self.rtc.clone();
+                ctx.spawn({
+                    let jitter_buffer_request = self.jitter_control.send(GetOrStoreJitterBuffer {
+                        addr,
+                        data: message,
+                    });
                     async move {
-                        if let Err(e) = dtls.send(WebRtcRequest::Rtc(message, addr)).await {
-                            warn!("udp recv to dtls: {:#?}", e)
+                        let jitter_buffer_response = jitter_buffer_request.await;
+                        match jitter_buffer_response {
+                            Ok(GetOrStoreJitterBufferResponse::Buffer(Some(jitter_buffer))) => {
+                                let response: Result<(), _> = futures::stream::iter(jitter_buffer)
+                                    .then(|message| {
+                                        rtc_addr.send(WebRtcRequest::Rtc(message, addr))
+                                    })
+                                    .try_collect()
+                                    .await;
+                                if let Err(e) = response {
+                                    warn!("Rtc request actor failed: {}", e)
+                                }
+                            }
+                            Ok(GetOrStoreJitterBufferResponse::Buffer(None)) => {}
+                            Ok(GetOrStoreJitterBufferResponse::Packet(message)) => {
+                                rtc_addr.do_send(WebRtcRequest::Rtc(message, addr))
+                            }
+                            Err(e) => {
+                                warn!("Jitter extracting error: {}", e)
+                            }
                         }
                     }
-                    .into_actor(self),
-                );
+                    .into_actor(self)
+                });
             }
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("recv unknown request"),
         }
     }
 }
@@ -139,15 +190,16 @@ impl StreamHandler<ClearData> for UdpRecv {
         let sessions_to_remove: Vec<Session> = self
             .sessions
             .iter()
-            .filter(|(_, (_, time))| match time.elapsed() {
+            .filter(|(_, SessionStorageItem { ttl, .. })| match ttl.elapsed() {
                 Ok(d) => d > Duration::from_secs(60),
                 Err(_e) => false,
             })
-            .map(|(s, (_, _))| s.clone())
+            .map(|(s, _)| s.clone())
             .collect();
 
         sessions_to_remove.into_iter().for_each(|s| {
             self.sessions.remove(&s);
+            self.media_sessions.remove(&s.get_client());
         });
     }
 }
@@ -157,24 +209,36 @@ impl Handler<SessionMessage> for UdpRecv {
 
     fn handle(
         &mut self,
-        SessionMessage(session, id): SessionMessage,
+        SessionMessage(session, item): SessionMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.sessions.insert(session, (id, SystemTime::now()));
+        self.sessions.insert(session, item);
         true
     }
 }
 
+impl Handler<MediaUserMessage> for UdpRecv {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        MediaUserMessage(user_name, media): MediaUserMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        self.media_sessions.insert(user_name, media);
+    }
+}
+
 pub struct UdpSend {
-    send: Arc<Mutex<SendHalf>>,
+    send: Arc<UdpSocket>,
     data: Arc<ServerData>,
 }
 
 impl UdpSend {
-    pub fn new(send: SendHalf, data: Arc<ServerData>) -> Addr<Self> {
-        Self::create(|_| Self {
-            send: Arc::new(Mutex::new(send)),
-            data,
+    pub fn new(send: Arc<UdpSocket>, data: Arc<ServerData>) -> Addr<Self> {
+        Self::create(|ctx| {
+            ctx.set_mailbox_capacity(1024);
+            Self { send, data }
         })
     }
 }
@@ -183,7 +247,7 @@ impl Actor for UdpSend {
     type Context = Context<Self>;
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        info!("stopping")
+        warn!("udp send actor died")
     }
 }
 
@@ -191,11 +255,12 @@ impl Handler<WebRtcRequest> for UdpSend {
     type Result = ();
 
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
-        let sender = Arc::clone(&self.send);
-
+        let send = self.send.clone();
         match msg {
             WebRtcRequest::Stun(req, addr) => {
-                let mut message_buf: Vec<u8> = vec![0; 0x10000];
+                let mut message_buf: DataPacket = DataPacket::with_capacity(1200);
+                unsafe { message_buf.set_len(1200) }
+
                 let n = write_stun_success_response(
                     req.transaction_id,
                     addr,
@@ -212,88 +277,78 @@ impl Handler<WebRtcRequest> for UdpSend {
                 };
 
                 message_buf.truncate(n);
+
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message_buf, &addr).await;
-                        if let Err(e) = result {
+                    UdpMassSender(send, addr, message_buf)
+                        .inspect_err(|e| {
                             if e.kind() != std::io::ErrorKind::AddrNotAvailable {
-                                warn!("err {:?}", e)
+                                warn!("err stun: {:?}", e)
                             }
-                        }
-                    }
-                    .into_actor(self),
+                        })
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Dtls(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message, &addr).await;
-                        if let Err(e) = result {
-                            warn!("err dtls {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    UdpMassSender(send, addr, message)
+                        .inspect_err(|e| warn!("err dtls send: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
                 ctx.spawn(
-                    async move {
-                        let result = sender.lock().await.send_to(&message, &addr).await;
-                        if let Err(e) = result {
-                            warn!("err dtls {:?}", e)
-                        }
-                    }
-                    .into_actor(self),
+                    UdpMassSender(send, addr, message)
+                        .inspect_err(|e| warn!("err rtc send: {:?}", e))
+                        .map(|_| ())
+                        .into_actor(self),
                 );
             }
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("send unknown request"),
         }
     }
 }
 
-pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Arc<Addr<UdpSend>>) {
-    let server = UdpSocket::bind(addr).await.expect("udp must be up");
+pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
+    let server = Arc::new(UdpSocket::bind(addr).await.expect("udp must be up"));
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
-    let data = Arc::new(ServerData { meta, crypto });
+    let data = Arc::new(ServerData { crypto, meta });
 
-    let (recv, send) = server.split();
-    let udp_send = Arc::new(UdpSend::new(send, Arc::clone(&data)));
-    let dtls = Arc::new(ClientActor::new(
+    let udp_send = UdpSend::new(server.clone(), Arc::clone(&data));
+    let client_storage = Arc::new(ClientsRefStorage::default());
+    let dtls = ClientActor::new(
         Arc::clone(&data.crypto.ssl_acceptor),
-        Arc::clone(&udp_send),
-    ));
-    let udp_recv = UdpRecv::new(recv, Arc::clone(&udp_send), dtls, data);
+        udp_send.clone(),
+        Arc::clone(&client_storage),
+    );
+    let jitter_control = JitterControlActor::new();
+    let rtc = RtcActor::new(
+        udp_send.clone(),
+        jitter_control.clone(),
+        Arc::clone(&client_storage),
+    );
+    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, jitter_control, rtc, data);
 
-    (udp_recv, Arc::clone(&udp_send))
+    (udp_recv, udp_send)
 }
 
 #[derive(Debug, Clone)]
 pub enum WebRtcRequest {
     Stun(StunBindingRequest, SocketAddr),
-    Dtls(Vec<u8>, SocketAddr),
-    Rtc(Vec<u8>, SocketAddr),
+    Dtls(DataPacket, SocketAddr),
+    Rtc(DataPacket, SocketAddr),
     Unknown,
 }
 
-impl WebRtcRequest {
-    pub fn get_type(&self) -> &str {
-        match self {
-            WebRtcRequest::Stun(_, _) => "stun",
-            WebRtcRequest::Dtls(_, _) => "dtls",
-            WebRtcRequest::Rtc(_, _) => "rtp",
-            WebRtcRequest::Unknown => "unknown",
+impl From<(DataPacket, SocketAddr)> for WebRtcRequest {
+    fn from((buf, addr): (DataPacket, SocketAddr)) -> Self {
+        if RtpHeader::is_rtp_header(&buf) {
+            return WebRtcRequest::Rtc(buf, addr);
         }
-    }
-}
-
-impl From<(Vec<u8>, SocketAddr)> for WebRtcRequest {
-    fn from((buf, addr): (Vec<u8>, SocketAddr)) -> Self {
         if let Some(stun) = parse_stun_binding_request(&buf) {
             return WebRtcRequest::Stun(stun, addr);
-        }
-        if parse_rtp(&buf).is_some() || is_rtcp(&buf) {
-            return WebRtcRequest::Rtc(buf, addr);
         }
         if is_dtls(&buf) {
             return WebRtcRequest::Dtls(buf, addr);
@@ -317,8 +372,21 @@ pub struct ServerData {
 #[rtype(result = "ServerData")]
 pub struct ServerDataRequest;
 
+#[derive(Copy, Clone, Debug)]
 struct ClearData;
 
 impl Message for ClearData {
     type Result = ();
 }
+
+struct UdpMassSender(Arc<UdpSocket>, SocketAddr, DataPacket);
+
+impl Future for UdpMassSender {
+    type Output = std::io::Result<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        self.0.as_ref().poll_send_to(cx, &self.2, self.1)
+    }
+}
+
+pub type DataPacket = SmallVec<[u8; 1200]>;

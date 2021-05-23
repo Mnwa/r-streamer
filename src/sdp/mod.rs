@@ -1,3 +1,6 @@
+pub mod media;
+
+use crate::sdp::media::MediaUserMessage;
 use crate::{
     client::sessions::{Session, SessionMessage},
     server::udp::{ServerDataRequest, UdpRecv},
@@ -11,13 +14,20 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+
+use crate::client::sessions::SessionStorageItem;
+use smol_str::SmolStr;
+use std::time::SystemTime;
+use webrtc_sdp::attribute_type::SdpAttribute::{IceOptions, RtcpMux};
+use webrtc_sdp::attribute_type::SdpAttributeType::{Recvonly, Sendonly};
 use webrtc_sdp::{
     address::{Address, ExplicitlyTypedAddress},
+    attribute_type::SdpAttribute::Rtpmap,
     attribute_type::{
         SdpAttribute,
         SdpAttribute::{
-            Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic, Rtcp,
-            Sendrecv as SendrecvAttr, Setup,
+            Candidate, EndOfCandidates, Fingerprint, Group, IceLite, MsidSemantic,
+            Recvonly as RecvonlyAttr, Rtcp, Sendonly as SendonlyAttr, Setup,
         },
         SdpAttributeCandidate, SdpAttributeCandidateTransport, SdpAttributeCandidateType,
         SdpAttributeFingerprint,
@@ -26,7 +36,7 @@ use webrtc_sdp::{
         SdpAttributeGroupSemantic::Bundle,
         SdpAttributeMsidSemantic, SdpAttributeRtcp,
         SdpAttributeSetup::Passive,
-        SdpAttributeType::{Group as GroupType, IceUfrag, Msid, Sendrecv, Ssrc, SsrcGroup},
+        SdpAttributeType::{Group as GroupType, IceUfrag, Msid, Ssrc, SsrcGroup},
     },
     error::{SdpParserError, SdpParserInternalError},
     media_type::SdpMedia,
@@ -53,20 +63,6 @@ pub async fn generate_streamer_response(
     let server_user = server_data.meta.user.clone();
     let server_passwd = server_data.meta.password.clone();
 
-    let _inserted = iter(&req.media)
-        .filter_map(|m| ready(m.get_attribute(IceUfrag)))
-        .map(|m| m.to_string().replace("ice-ufrag:", ""))
-        .map(|client_user| Session::new(server_user.clone(), client_user))
-        .map(|session| SessionMessage(session, group_id))
-        .then(|session_message| recv.send(session_message))
-        .try_collect::<Vec<_>>()
-        .await
-        .expect("session sending error");
-
-    let mut rng = rand::thread_rng();
-    origin.session_id = rng.gen();
-    origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
-
     let group = req.get_attribute(GroupType).cloned().unwrap_or_else(|| {
         Group(SdpAttributeGroup {
             semantics: Bundle,
@@ -79,13 +75,42 @@ pub async fn generate_streamer_response(
         })
     });
 
+    let _inserted = iter(&req.media)
+        .filter_map(|m| ready(m.get_attribute(IceUfrag)))
+        .map(|m| m.to_string().replace("ice-ufrag:", ""))
+        .map(|client_user| Session::new(server_user.clone(), client_user.into()))
+        .map(|session| {
+            (
+                MediaUserMessage(session.get_client(), req.media.clone().into()),
+                SessionMessage(
+                    session,
+                    SessionStorageItem {
+                        group_id,
+                        ttl: SystemTime::now(),
+                        is_sender: req.get_attribute(Sendonly).is_some(),
+                    },
+                ),
+            )
+        })
+        .then(|(media_message, session_message)| {
+            futures::future::join(recv.send(session_message), recv.send(media_message))
+        })
+        .map(|res| res.0.and_then(|v| Ok((v, res.1?))))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("session sending error");
+
+    let mut rng = rand::thread_rng();
+    origin.session_id = rng.gen::<u16>() as u64;
+    origin.unicast_addr = ExplicitlyTypedAddress::from(sdp_addr.ip());
+
     let media: Vec<SdpMedia> = req
         .media
         .into_iter()
         .map(|mut m| {
             m.set_port(sdp_addr.port() as u32);
 
-            remove_useless_attributes(&mut m);
+            remove_useless_attributes(&mut m)?;
             set_attributes(
                 &mut m,
                 server_user.clone(),
@@ -94,7 +119,11 @@ pub async fn generate_streamer_response(
                 sdp_addr,
                 &mut rng,
             )?;
-            replace_connection(m.get_connection(), sdp_addr);
+            m.set_connection(SdpConnection {
+                address: ExplicitlyTypedAddress::from(sdp_addr.ip()),
+                ttl: None,
+                amount: None,
+            });
             Ok(m)
         })
         .collect::<Result<Vec<SdpMedia>, SdpResponseGeneratorError>>()?;
@@ -114,6 +143,7 @@ pub async fn generate_streamer_response(
     res.add_attribute(group)?;
 
     res.add_attribute(IceLite)?;
+    res.add_attribute(IceOptions(vec!["trickle".into()]))?;
 
     res.set_timing(SdpTiming { start: 0, stop: 0 });
 
@@ -121,37 +151,51 @@ pub async fn generate_streamer_response(
     Ok(res)
 }
 
-fn replace_connection(connection: &Option<SdpConnection>, addr: SocketAddr) {
-    #[allow(mutable_transmutes)]
-    #[allow(clippy::transmute_ptr_to_ptr)]
-    let connection = unsafe {
-        std::mem::transmute::<&Option<SdpConnection>, &mut Option<SdpConnection>>(connection)
-    };
-    *connection = Some(SdpConnection {
-        address: ExplicitlyTypedAddress::from(addr.ip()),
-        ttl: None,
-        amount: None,
-    });
-}
-
-fn remove_useless_attributes(m: &mut SdpMedia) {
+fn remove_useless_attributes(m: &mut SdpMedia) -> Result<(), SdpParserInternalError> {
     m.remove_attribute(Msid);
-    m.remove_attribute(Sendrecv);
+    if m.get_attribute(Recvonly).is_some() {
+        m.remove_attribute(Recvonly);
+        m.set_attribute(SendonlyAttr)?;
+    } else if m.get_attribute(Sendonly).is_some() {
+        m.remove_attribute(Sendonly);
+        m.set_attribute(RecvonlyAttr)?;
+    }
     m.remove_attribute(SsrcGroup);
     m.remove_attribute(Ssrc);
+    Ok(())
 }
 
 fn set_attributes(
     m: &mut SdpMedia,
-    server_user: String,
-    server_passwd: String,
+    server_user: SmolStr,
+    server_passwd: SmolStr,
     fingerprint: Vec<u8>,
     addr: SocketAddr,
     rng: &mut ThreadRng,
 ) -> Result<(), SdpParserInternalError> {
-    m.set_attribute(SendrecvAttr)?;
-    m.set_attribute(SdpAttribute::IcePwd(server_passwd))?;
-    m.set_attribute(SdpAttribute::IceUfrag(server_user))?;
+    let good_codecs: Vec<_> = m
+        .get_attributes()
+        .iter()
+        .filter_map(|attr| match attr {
+            Rtpmap(s) => {
+                if is_supported_format(&format!("{}/{}", s.codec_name, s.frequency)) {
+                    Some(s)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .cloned()
+        .collect();
+
+    m.remove_codecs();
+    good_codecs
+        .into_iter()
+        .try_for_each(|attr| m.add_codec(attr))?;
+
+    m.set_attribute(SdpAttribute::IcePwd(server_passwd.to_string()))?;
+    m.set_attribute(SdpAttribute::IceUfrag(server_user.to_string()))?;
     m.set_attribute(Fingerprint(SdpAttributeFingerprint {
         hash_algorithm: Sha256,
         fingerprint,
@@ -161,7 +205,10 @@ fn set_attributes(
         port: addr.port(),
         unicast_addr: Some(ExplicitlyTypedAddress::from(addr.ip())),
     }))?;
-    m.set_attribute(Candidate(SdpAttributeCandidate {
+
+    m.set_attribute(RtcpMux)?;
+
+    m.add_attribute(Candidate(SdpAttributeCandidate {
         foundation: "0".to_string(),
         priority: rng.gen::<u32>() as u64,
         address: Address::Ip(addr.ip()),
@@ -188,7 +235,7 @@ pub enum SdpResponseGeneratorError {
     SdpParserError(SdpParserError),
     SdpParserInternalError(SdpParserInternalError),
     MailBoxError(MailboxError),
-    CustomError(String),
+    CustomError(SmolStr),
 }
 
 impl Display for SdpResponseGeneratorError {
@@ -226,4 +273,19 @@ impl From<&str> for SdpResponseGeneratorError {
     fn from(e: &str) -> Self {
         SdpResponseGeneratorError::CustomError(e.into())
     }
+}
+
+#[inline]
+fn is_supported_format(format: &str) -> bool {
+    matches!(
+        format,
+        "PCMU/8000"
+            | "PCMA/8000"
+            | "G722/8000"
+            | "H264/90000"
+            | "telephone-event/8000"
+            | "opus/48000"
+            | "VP8/90000"
+            | "VP9/90000"
+    )
 }

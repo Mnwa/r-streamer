@@ -3,18 +3,23 @@ use std::{error, net::SocketAddr, str};
 use byteorder::{ByteOrder, NetworkEndian};
 use crc32fast::Hasher as Crc32Hasher;
 use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
+use smol_str::SmolStr;
 
 pub type Error = Box<dyn error::Error + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct StunBindingRequest {
     pub transaction_id: [u8; STUN_TRANSACTION_ID_LEN],
-    pub remote_user: String,
-    pub server_user: String,
+    pub remote_user: SmolStr,
+    pub server_user: SmolStr,
 }
 
 pub fn parse_stun_binding_request(bytes: &[u8]) -> Option<StunBindingRequest> {
     if bytes.len() < STUN_HEADER_LEN {
+        return None;
+    }
+
+    if bytes[0] >> 6 != 0 {
         return None;
     }
 
@@ -54,8 +59,8 @@ pub fn parse_stun_binding_request(bytes: &[u8]) -> Option<StunBindingRequest> {
             {
                 return None;
             }
-            let server_user = str::from_utf8(server_user).ok()?.to_owned();
-            let remote_user = str::from_utf8(remote_user).ok()?.to_owned();
+            let server_user = str::from_utf8(server_user).ok()?.into();
+            let remote_user = str::from_utf8(remote_user).ok()?.into();
 
             return Some(StunBindingRequest {
                 transaction_id,

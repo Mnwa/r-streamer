@@ -1,6 +1,8 @@
+use crate::client::clients::ClientStateStatus;
+use crate::sdp::media::MediaAddrMessage;
 use crate::{
     client::{
-        clients::{ClientState, ClientsRefStorage, ClientsStorage},
+        clients::ClientsRefStorage,
         dtls::{extract_dtls, push_dtls},
         group::{Group, GroupId},
     },
@@ -8,36 +10,45 @@ use crate::{
         connector::connect,
         message::{DtlsMessage, MessageType},
     },
-    rtp::core::{is_rtcp, rtcp_processor, rtp_processor},
     server::udp::{UdpSend, WebRtcRequest},
 };
 use actix::prelude::*;
-use futures::stream::{iter, StreamExt, TryStreamExt};
-use log::warn;
+use log::{info, warn};
 use openssl::ssl::SslAcceptor;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{timeout, Duration};
 
 pub struct ClientActor {
-    client_storage: ClientsRefStorage,
+    client_storage: Arc<ClientsRefStorage>,
     groups: Group,
     ssl_acceptor: Arc<SslAcceptor>,
-    udp_send: Arc<Addr<UdpSend>>,
+    udp_send: Addr<UdpSend>,
 }
 
 impl ClientActor {
-    pub fn new(ssl_acceptor: Arc<SslAcceptor>, udp_send: Arc<Addr<UdpSend>>) -> Addr<ClientActor> {
-        ClientActor::create(|_| ClientActor {
-            ssl_acceptor,
-            udp_send,
-            client_storage: ClientsRefStorage::new(),
-            groups: Group::default(),
+    pub fn new(
+        ssl_acceptor: Arc<SslAcceptor>,
+        udp_send: Addr<UdpSend>,
+        client_storage: Arc<ClientsRefStorage>,
+    ) -> Addr<ClientActor> {
+        ClientActor::create(|ctx| {
+            ctx.set_mailbox_capacity(1024);
+            ClientActor {
+                ssl_acceptor,
+                udp_send,
+                client_storage,
+                groups: Group::default(),
+            }
         })
     }
 }
 
 impl Actor for ClientActor {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        warn!("client actor died")
+    }
 }
 
 impl Handler<WebRtcRequest> for ClientActor {
@@ -46,15 +57,17 @@ impl Handler<WebRtcRequest> for ClientActor {
     fn handle(&mut self, msg: WebRtcRequest, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             WebRtcRequest::Dtls(message, addr) => {
-                let client_ref = self.client_storage.entry(addr).or_default();
+                let client_ref = Arc::clone(self.client_storage.write().entry(addr).or_default());
                 let acceptor = Arc::clone(&self.ssl_acceptor);
 
-                ctx.add_message_stream(client_ref.outgoing_stream(addr));
+                let self_addr = ctx.address();
 
                 let incoming_writer = Arc::clone(&client_ref.get_channels().incoming_writer);
-                let client = client_ref.get_client();
 
-                let self_addr = ctx.address();
+                if !client_ref.dtls_connected() {
+                    ctx.add_message_stream(client_ref.get_channels().outgoing_stream(addr));
+                    client_ref.make_connected()
+                }
 
                 ctx.spawn(
                     async move {
@@ -67,125 +80,55 @@ impl Handler<WebRtcRequest> for ClientActor {
                         }
                         drop(incoming_writer);
 
-                        let mut client_unlocked = client.lock().await;
+                        let state = client_ref.get_state().lock().await;
+                        let status = state.get_status();
+                        drop(state);
 
-                        match client_unlocked.state {
-                            ClientState::New(_) => {
-                                if let Err(e) = connect(&mut client_unlocked, acceptor).await {
-                                    warn!("connect err: {}", e);
-                                    match self_addr.send(DeleteMessage(addr)).await {
-                                        Err(e) => warn!("delete err: {}", e),
-                                        Ok(is_deleted) => println!("deleted {}", is_deleted),
+                        match status {
+                            ClientStateStatus::New => {
+                                match connect(client_ref.clone(), acceptor).await {
+                                    Err(e) => {
+                                        warn!("{} connect err: {}", addr, e);
+                                        match self_addr.send(DeleteMessage(addr)).await {
+                                            Err(e) => warn!("delete err: {}", e),
+                                            Ok(is_deleted) => info!("deleted {}", is_deleted),
+                                        }
+                                    }
+                                    Ok(srtp_transport) => {
+                                        *client_ref.get_srtp().lock() = Some(srtp_transport);
+                                        info!("client {} connected", addr)
                                     }
                                 }
                             }
-                            ClientState::Connected(_, _) => {
+                            ClientStateStatus::Connected => {
                                 let mut buf = vec![0; 512];
                                 let result = timeout(
                                     Duration::from_millis(10),
-                                    extract_dtls(&mut client_unlocked, &mut buf),
+                                    extract_dtls(client_ref.clone(), &mut buf),
                                 )
                                 .await
                                 .map_err(|_| std::io::ErrorKind::TimedOut.into())
                                 .and_then(|r| r);
 
-                                drop(client_unlocked);
-
                                 if matches!(result, Ok(0)) {
                                     match self_addr.send(DeleteMessage(addr)).await {
                                         Err(e) => warn!("delete err: {}", e),
-                                        Ok(d) if d => println!("success deleted"),
-                                        Ok(_) => println!("fail deleting"),
+                                        Ok(d) if d => info!("success deleted"),
+                                        Ok(_) => info!("fail deleting"),
                                     }
                                 }
                             }
-                            ClientState::Shutdown => {}
+                            ClientStateStatus::Shutdown => {}
                         }
                     }
                     .into_actor(self),
                 );
             }
-            WebRtcRequest::Rtc(message, addr) => {
-                let udp_send = Arc::clone(&self.udp_send);
-                let client = self.client_storage.entry(addr).or_default().get_client();
-                let addresses = self.groups.get_addressess(addr).map(|addresses| {
-                    addresses
-                        .into_iter()
-                        .filter_map(|g_addr| {
-                            self.client_storage
-                                .get(&g_addr)
-                                .map(|client_ref| (g_addr, client_ref.get_client()))
-                        })
-                        .collect::<ClientsStorage>()
-                });
-
-                ctx.spawn(
-                    async move {
-                        let mut client_unlocked = client.lock().await;
-                        if let ClientState::Connected(_, srtp) = &mut client_unlocked.state {
-                            let message_processed = if is_rtcp(&message) {
-                                rtcp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                                    .map_err(|e| {
-                                        if !e.should_ignored() {
-                                            warn!("rtp err: {}", e);
-                                        }
-                                        e
-                                    })
-                                    .ok()
-                            } else {
-                                rtp_processor(WebRtcRequest::Rtc(message, addr), Some(srtp))
-                                    .map_err(|e| {
-                                        if !e.should_ignored() {
-                                            warn!("rtp err: {}", e);
-                                        }
-                                        e
-                                    })
-                                    .ok()
-                            };
-
-                            let addresses_processed = addresses
-                                .filter(|addresses| !addresses.is_empty())
-                                .and_then(|addresses| Some((addresses, message_processed?)));
-
-                            if let Some((addresses, message)) = addresses_processed {
-                                let is_sent = iter(addresses)
-                                    .then(|(addr, client)| {
-                                        let mut message = message.clone();
-                                        let udp_send = Arc::clone(&udp_send);
-                                        async move {
-                                            let mut client = client.lock().await;
-                                            if let ClientState::Connected(_, srtp) =
-                                                &mut client.state
-                                            {
-                                                if is_rtcp(&message) {
-                                                    match srtp.protect_rtcp(&message) {
-                                                        Ok(m) => message = m,
-                                                        Err(e) => warn!("protect rtcp err: {}", e),
-                                                    }
-                                                } else {
-                                                    match srtp.protect(&message) {
-                                                        Ok(m) => message = m,
-                                                        Err(e) => warn!("protect rtp err: {}", e),
-                                                    }
-                                                }
-                                            }
-                                            udp_send.send(WebRtcRequest::Rtc(message, addr)).await
-                                        }
-                                    })
-                                    .try_collect::<Vec<_>>()
-                                    .await;
-
-                                if let Err(e) = is_sent {
-                                    warn!("udp send err: {}", e)
-                                }
-                            }
-                        }
-                    }
-                    .into_actor(self),
-                );
+            WebRtcRequest::Rtc(_, _) => {
+                warn!("stun could not be accepted in client actor")
             }
             WebRtcRequest::Stun(_, _) => warn!("stun could not be accepted in client actor"),
-            WebRtcRequest::Unknown => warn!("unknown request"),
+            WebRtcRequest::Unknown => warn!("client actor unknown request"),
         }
     }
 }
@@ -197,7 +140,7 @@ impl Handler<DtlsMessage> for ClientActor {
         match item.get_type() {
             MessageType::Incoming => warn!("accepted incoming dtls message in the ClientActor"),
             MessageType::Outgoing => {
-                let udp_send = Arc::clone(&self.udp_send);
+                let udp_send = self.udp_send.clone();
                 ctx.spawn(
                     async move {
                         if let Err(e) = udp_send.send(item.into_webrtc()).await {
@@ -219,16 +162,19 @@ impl Handler<DeleteMessage> for ClientActor {
         DeleteMessage(addr): DeleteMessage,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        self.client_storage
-            .remove(&addr)
-            .and_then(|_| {
-                if self.groups.remove_client(addr) {
-                    Some(())
-                } else {
-                    None
-                }
-            })
-            .is_some()
+        let client = self.client_storage.write().remove(&addr);
+
+        if let Some(client) = client {
+            self.groups.remove_sender(addr);
+            client.delete();
+            let mut receivers = client.get_receivers().write();
+            *receivers = receivers
+                .clone()
+                .into_iter()
+                .filter(|(_, recv)| !recv.is_deleted())
+                .collect();
+        }
+        true
     }
 }
 
@@ -237,11 +183,56 @@ impl Handler<GroupId> for ClientActor {
 
     fn handle(
         &mut self,
-        GroupId(group_id, addr): GroupId,
+        GroupId(group_id, addr, is_sender): GroupId,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        if self.client_storage.contains_key(&addr) {
-            self.groups.insert_client(group_id, addr)
+        let last_sender_addr = self.groups.insert_or_get_sender(group_id, addr, is_sender);
+        if last_sender_addr == addr && !is_sender {
+            return;
+        }
+
+        let client_storage = &*self.client_storage.read();
+
+        let receiver_ref = client_storage.get(&addr);
+        let sender_ref = client_storage.get(&last_sender_addr);
+
+        if let (Some(receiver_ref), Some(sender_ref)) = (receiver_ref, sender_ref) {
+            let mut receivers = sender_ref.get_receivers().write();
+            if last_sender_addr != addr && is_sender {
+                *receivers = sender_ref
+                    .get_receivers()
+                    .read()
+                    .clone()
+                    .into_iter()
+                    .filter(|(recv_addr, _)| *recv_addr != addr)
+                    .map(|(recv_addr, recv_client)| {
+                        *recv_client.get_sender_addr().write() = Some(addr);
+                        (recv_addr, recv_client)
+                    })
+                    .collect();
+            } else {
+                *receiver_ref.get_sender_addr().write() = Some(last_sender_addr);
+                receivers.insert(addr, Arc::clone(receiver_ref));
+            }
+        }
+    }
+}
+
+impl Handler<MediaAddrMessage> for ClientActor {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        MediaAddrMessage(addr, media): MediaAddrMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        if let Some(c) = self.client_storage.read().get(&addr) {
+            let mut rtp_runtime_storage = c.get_rtp_runtime_storage().lock();
+            media.get_frequencies().into_iter().for_each(|f| {
+                rtp_runtime_storage.entry(f).or_default();
+            });
+            let mut c_media = c.get_media().write();
+            *c_media = Some(media);
         }
     }
 }

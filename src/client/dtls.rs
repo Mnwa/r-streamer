@@ -1,28 +1,23 @@
+use crate::client::clients::ClientSafeRef;
+use crate::server::udp::DataPacket;
 use crate::{
-    client::clients::{Client, ClientError, ClientState},
+    client::clients::{ClientError, ClientState},
     client::stream::IncomingWriter,
 };
 use futures::prelude::*;
-use tokio::prelude::*;
+use std::ops::DerefMut;
+use tokio::io::AsyncReadExt;
 
 pub async fn push_dtls(
     incoming_writer: &mut IncomingWriter,
-    buf: Vec<u8>,
+    buf: DataPacket,
 ) -> Result<(), ClientError> {
     incoming_writer.send(buf).await.map_err(|e| e.into())
 }
 
-pub async fn extract_dtls(client: &mut Client, buf: &mut [u8]) -> Result<usize, ClientError> {
-    if let ClientState::Connected(ssl_stream, _) = &mut client.state {
+pub async fn extract_dtls(client: ClientSafeRef, buf: &mut [u8]) -> Result<usize, ClientError> {
+    if let ClientState::Connected(ssl_stream) = client.get_state().lock().await.deref_mut() {
         return ssl_stream.read(buf).await.map_err(|e| e.into());
-    }
-    Err(ClientError::NotConnected)
-}
-
-#[allow(dead_code)]
-pub async fn write_message(client: &mut Client, buf: &mut [u8]) -> Result<usize, ClientError> {
-    if let ClientState::Connected(ssl_stream, _) = &mut client.state {
-        return ssl_stream.write(buf).await.map_err(|e| e.into());
     }
     Err(ClientError::NotConnected)
 }

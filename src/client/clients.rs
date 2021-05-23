@@ -1,9 +1,17 @@
+use crate::rtp::jitter::JITTER_BUFFER_START_DELAY;
+use crate::sdp::media::MediaList;
 use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
-    dtls::message::DtlsMessage,
     rtp::srtp::{ErrorParse, SrtpTransport},
 };
-use futures::{channel::mpsc::SendError, lock::Mutex, prelude::*, stream::FusedStream};
+use futures::channel::mpsc::SendError;
+use openssl::error::ErrorStack;
+use openssl::ssl::Error as SslError;
+use parking_lot::{Mutex, RwLock};
+use rand::Rng;
+use std::num::{NonZeroU16, NonZeroU32};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use std::{
     collections::HashMap,
     error::Error,
@@ -11,29 +19,31 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tokio::sync::Mutex as MutexAsync;
 use tokio_openssl::SslStream;
-
-#[derive(Debug)]
-pub struct Client {
-    pub(crate) state: ClientState,
-    pub(crate) channels: ClientSslPacketsChannels,
-}
-
-impl Default for Client {
-    fn default() -> Self {
-        let (stream, channels) = ClientSslPackets::new();
-        Client {
-            state: ClientState::New(stream),
-            channels,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum ClientState {
     New(ClientSslPackets),
-    Connected(SslStream<ClientSslPackets>, SrtpTransport),
+    Connected(SslStream<ClientSslPackets>),
     Shutdown,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ClientStateStatus {
+    New,
+    Connected,
+    Shutdown,
+}
+
+impl ClientState {
+    pub fn get_status(&self) -> ClientStateStatus {
+        match self {
+            ClientState::New(_) => ClientStateStatus::New,
+            ClientState::Connected(_) => ClientStateStatus::Connected,
+            ClientState::Shutdown => ClientStateStatus::Shutdown,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -43,6 +53,8 @@ pub enum ClientError {
     AlreadyConnected,
     Read(std::io::Error),
     SrtpParseError(ErrorParse),
+    SslErrorStack(ErrorStack),
+    SslError(SslError),
 }
 
 impl Display for ClientError {
@@ -53,6 +65,8 @@ impl Display for ClientError {
             ClientError::AlreadyConnected => write!(f, "Client already connected"),
             ClientError::Read(e) => write!(f, "Read: {}", e),
             ClientError::SrtpParseError(e) => write!(f, "Srtp parsing error: {}", e),
+            ClientError::SslErrorStack(e) => write!(f, "Ssl stack error: {}", e),
+            ClientError::SslError(e) => write!(f, "Ssl error: {}", e),
         }
     }
 }
@@ -79,51 +93,136 @@ impl From<ErrorParse> for ClientError {
         ClientError::SrtpParseError(e)
     }
 }
-
-pub type ClientsRefStorage = HashMap<SocketAddr, ClientRef>;
-pub type ClientsStorage = HashMap<SocketAddr, Arc<Mutex<Client>>>;
-
-pub struct ClientRef(Arc<Mutex<Client>>, ClientSslPacketsChannels);
-impl ClientRef {
-    pub fn get_client(&self) -> Arc<Mutex<Client>> {
-        Arc::clone(&self.0)
+impl From<ErrorStack> for ClientError {
+    fn from(e: ErrorStack) -> Self {
+        ClientError::SslErrorStack(e)
+    }
+}
+impl From<SslError> for ClientError {
+    fn from(e: SslError) -> Self {
+        ClientError::SslError(e)
     }
 }
 
-impl From<Client> for ClientRef {
-    fn from(c: Client) -> Self {
-        let channels = c.channels.clone();
-        ClientRef(Arc::new(Mutex::new(c)), channels)
-    }
+pub type ClientsRefStorage = Arc<RwLock<HashMap<SocketAddr, ClientSafeRef>>>;
+
+pub type ClientSafeRef = Arc<Client>;
+
+#[derive(Debug, Copy, Clone)]
+pub struct ClientRtpRuntime {
+    pub client_ts: Option<NonZeroU32>,
+    pub server_ts: u32,
+    pub client_sequence: Option<NonZeroU16>,
+    pub server_sequence: u16,
+    pub started_time: Instant,
+    pub prev_time_diff: Duration,
 }
 
-impl Default for ClientRef {
+pub type ClientRtpRuntimeStorage = HashMap<u32, ClientRtpRuntime>;
+
+impl Default for ClientRtpRuntime {
     fn default() -> Self {
-        Client::default().into()
+        let mut rng = rand::thread_rng();
+        Self {
+            server_ts: rng.gen_range(1..100000),
+            server_sequence: rng.gen_range(1..10000),
+            started_time: Instant::now(),
+            client_ts: Default::default(),
+            client_sequence: Default::default(),
+            prev_time_diff: Default::default(),
+        }
     }
 }
 
-impl ClientRef {
-    pub fn outgoing_stream(&self, addr: SocketAddr) -> impl Stream<Item = DtlsMessage> {
-        let outgoing_reader = Arc::clone(&self.1.outgoing_reader);
-        futures::stream::unfold(
-            (outgoing_reader, addr),
-            |(outgoing_reader, addr)| async move {
-                let mut reader = outgoing_reader.lock().await;
-                if reader.is_terminated() {
-                    return None;
-                }
-                let message = reader.next().await?;
-                drop(reader);
-                Some((
-                    DtlsMessage::create_outgoing(message, addr),
-                    (outgoing_reader, addr),
-                ))
-            },
-        )
+#[derive(Debug, Copy, Clone)]
+pub struct ClientRtpJitterStats {
+    pub jitter_delay: u32,
+    pub jitter_check_timestamp: Instant,
+}
+
+impl Default for ClientRtpJitterStats {
+    fn default() -> Self {
+        Self {
+            jitter_delay: JITTER_BUFFER_START_DELAY.as_millis() as u32,
+            jitter_check_timestamp: Instant::now(),
+        }
+    }
+}
+
+pub struct Client {
+    state: MutexAsync<ClientState>,
+    channels: ClientSslPacketsChannels,
+    media: RwLock<Option<MediaList>>,
+    srtp: Mutex<Option<SrtpTransport>>,
+    rtp_runtime_storage: Mutex<ClientRtpRuntimeStorage>,
+    jitter_stats: Mutex<ClientRtpJitterStats>,
+    receivers: ClientsRefStorage,
+    sender_addr: RwLock<Option<SocketAddr>>,
+    is_deleted: AtomicBool,
+    dtls_connected: AtomicBool,
+}
+impl Client {
+    pub fn get_state(&self) -> &MutexAsync<ClientState> {
+        &self.state
+    }
+    pub fn get_srtp(&self) -> &Mutex<Option<SrtpTransport>> {
+        &self.srtp
+    }
+    pub fn get_media(&self) -> &RwLock<Option<MediaList>> {
+        &self.media
+    }
+    pub fn get_receivers(&self) -> &ClientsRefStorage {
+        &self.receivers
+    }
+    pub fn get_rtp_runtime_storage(&self) -> &Mutex<ClientRtpRuntimeStorage> {
+        &self.rtp_runtime_storage
+    }
+    pub fn get_jitter_stats(&self) -> &Mutex<ClientRtpJitterStats> {
+        &self.jitter_stats
+    }
+
+    pub fn get_sender_addr(&self) -> &RwLock<Option<SocketAddr>> {
+        &self.sender_addr
+    }
+
+    pub fn delete(&self) {
+        self.is_deleted.store(true, Ordering::Release)
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.is_deleted.load(Ordering::Acquire)
+    }
+
+    pub fn dtls_connected(&self) -> bool {
+        self.dtls_connected.load(Ordering::Acquire)
+    }
+
+    pub fn make_connected(&self) {
+        self.dtls_connected.store(true, Ordering::Release);
     }
 
     pub fn get_channels(&self) -> &ClientSslPacketsChannels {
-        &self.1
+        &self.channels
+    }
+}
+
+unsafe impl Send for ClientState {}
+unsafe impl Send for Client {}
+
+impl Default for Client {
+    fn default() -> Self {
+        let (stream, channels) = ClientSslPackets::new();
+        Client {
+            state: MutexAsync::new(ClientState::New(stream)),
+            channels,
+            media: Default::default(),
+            srtp: Default::default(),
+            receivers: Default::default(),
+            sender_addr: Default::default(),
+            is_deleted: Default::default(),
+            dtls_connected: Default::default(),
+            rtp_runtime_storage: Default::default(),
+            jitter_stats: Default::default(),
+        }
     }
 }

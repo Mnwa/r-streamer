@@ -1,7 +1,9 @@
-use bitreader::BitReaderError;
-use bytes::BytesMut;
+use crate::server::udp::DataPacket;
+use actix::MailboxError;
 use openssl::{error::ErrorStack, ssl::SslRef};
+use smol_str::SmolStr;
 use srtp::{CryptoPolicy, Error as ErrorSrtp, Srtp, SsrcType};
+use std::net::SocketAddr;
 use std::{
     error::Error,
     fmt::{Display, Formatter},
@@ -20,10 +22,8 @@ impl SrtpTransport {
                 CryptoPolicy::AesCm128HmacSha1Bit80,
                 CryptoPolicy::AesCm128HmacSha1Bit80,
             ),
-            Some(profile) => {
-                return Err(ErrorParse::UnsupportedProfile(profile.name().to_string()))
-            }
-            None => return Err(ErrorParse::UnsupportedProfile("empty".to_string())),
+            Some(profile) => return Err(ErrorParse::UnsupportedProfile(profile.name().into())),
+            None => return Err(ErrorParse::UnsupportedProfile("empty".into())),
         };
 
         let mut dtls_buf = vec![0; rtp_policy.master_len() * 2];
@@ -41,28 +41,20 @@ impl SrtpTransport {
         })
     }
 
-    pub fn protect(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.server.protect(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn protect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
+        self.server.protect(buf).map_err(|e| e.into())
     }
 
-    pub fn protect_rtcp(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.server.protect_rtcp(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn protect_rtcp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
+        self.server.protect_rtcp(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.client.unprotect(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn unprotect(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
+        self.client.unprotect(buf).map_err(|e| e.into())
     }
 
-    pub fn unprotect_rctp(&mut self, buf: &[u8]) -> Result<Vec<u8>, ErrorParse> {
-        let mut buf = BytesMut::from(buf);
-        self.client.unprotect_rtcp(&mut buf)?;
-        Ok(buf.to_vec())
+    pub fn unprotect_rtcp(&mut self, buf: &mut DataPacket) -> Result<(), ErrorParse> {
+        self.client.unprotect_rtcp(buf).map_err(|e| e.into())
     }
 }
 
@@ -70,9 +62,11 @@ impl SrtpTransport {
 pub enum ErrorParse {
     Openssl(ErrorStack),
     Srtp(ErrorSrtp),
-    UnsupportedProfile(String),
-    UnsupportedRequest(String),
+    UnsupportedProfile(SmolStr),
     UnsupportedFormat,
+    ClientNotReady(SocketAddr),
+    CodecNotSet(SocketAddr),
+    ActorDead(MailboxError),
 }
 
 impl ErrorParse {
@@ -87,8 +81,10 @@ impl Display for ErrorParse {
             ErrorParse::Openssl(e) => write!(f, "{}", e),
             ErrorParse::Srtp(e) => write!(f, "{:?}", e),
             ErrorParse::UnsupportedProfile(e) => write!(f, "Unsupported profile: {}", e),
-            ErrorParse::UnsupportedRequest(e) => write!(f, "Unsupported request: {}", e),
             ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
+            ErrorParse::ClientNotReady(addr) => write!(f, "Client not ready: {}", addr),
+            ErrorParse::ActorDead(e) => write!(f, "Actor is dead: {:?}", e),
+            ErrorParse::CodecNotSet(e) => write!(f, "Codec not set: {:?}", e),
         }
     }
 }
@@ -107,8 +103,8 @@ impl From<ErrorSrtp> for ErrorParse {
     }
 }
 
-impl From<BitReaderError> for ErrorParse {
-    fn from(_e: BitReaderError) -> Self {
-        ErrorParse::UnsupportedFormat
+impl From<MailboxError> for ErrorParse {
+    fn from(e: MailboxError) -> Self {
+        ErrorParse::ActorDead(e)
     }
 }

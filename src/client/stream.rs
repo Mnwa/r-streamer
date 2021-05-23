@@ -1,16 +1,19 @@
+use crate::dtls::message::DtlsMessage;
+use crate::server::udp::DataPacket;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    lock::Mutex,
     stream::FusedStream,
-    FutureExt, SinkExt, StreamExt,
+    FutureExt, SinkExt, Stream, StreamExt,
 };
+use std::net::SocketAddr;
 use std::{
     fmt::{Debug, Formatter},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{io::Error, prelude::*};
+use tokio::io::{AsyncRead, AsyncWrite, Error, ReadBuf};
+use tokio::sync::Mutex;
 
 pub struct ClientSslPackets {
     incoming_reader: IncomingReader, // read here to decrypt request
@@ -35,11 +38,33 @@ pub struct ClientSslPacketsChannels {
     pub outgoing_reader: Arc<Mutex<OutgoingReader>>,
 }
 
-pub type IncomingWriter = UnboundedSender<Vec<u8>>;
-pub type IncomingReader = UnboundedReceiver<Vec<u8>>;
+impl ClientSslPacketsChannels {
+    pub fn outgoing_stream(&self, addr: SocketAddr) -> impl Stream<Item = DtlsMessage> {
+        let outgoing_reader = Arc::clone(&self.outgoing_reader);
+        futures::stream::unfold(
+            (outgoing_reader, addr),
+            |(outgoing_reader, addr)| async move {
+                let mut reader = outgoing_reader.lock().await;
+                if reader.is_terminated() {
+                    return None;
+                }
+                let message = reader.next().await?;
 
-pub type OutgoingReader = UnboundedReceiver<Vec<u8>>;
-pub type OutgoingWriter = UnboundedSender<Vec<u8>>;
+                drop(reader);
+                Some((
+                    DtlsMessage::create_outgoing(message, addr),
+                    (outgoing_reader, addr),
+                ))
+            },
+        )
+    }
+}
+
+pub type IncomingWriter = UnboundedSender<DataPacket>;
+pub type IncomingReader = UnboundedReceiver<DataPacket>;
+
+pub type OutgoingReader = UnboundedReceiver<DataPacket>;
+pub type OutgoingWriter = UnboundedSender<DataPacket>;
 
 impl ClientSslPackets {
     pub fn new() -> (ClientSslPackets, ClientSslPacketsChannels) {
@@ -66,19 +91,16 @@ impl AsyncRead for ClientSslPackets {
     fn poll_read<'a>(
         mut self: Pin<&'a mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         if self.incoming_reader.is_terminated() {
             return Poll::Ready(Err(std::io::ErrorKind::ConnectionAborted.into()));
         }
 
         match self.incoming_reader.poll_next_unpin(cx) {
             Poll::Ready(Some(message)) => {
-                if buf.len() < message.len() {
-                    return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()));
-                }
-                buf[0..message.len()].copy_from_slice(&message);
-                Poll::Ready(Ok(message.len()))
+                buf.put_slice(&message);
+                Poll::Ready(Ok(()))
             }
             Poll::Ready(None) => Poll::Ready(Err(std::io::ErrorKind::ConnectionAborted.into())),
             Poll::Pending => Poll::Pending,
@@ -95,7 +117,7 @@ impl AsyncWrite for ClientSslPackets {
         match self
             .get_mut()
             .outgoing_writer
-            .send(buf.to_vec())
+            .send(DataPacket::from(buf))
             .poll_unpin(cx)
         {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.len())),

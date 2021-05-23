@@ -1,60 +1,9 @@
-use crate::rtp::srtp::ErrorParse::{UnsupportedFormat, UnsupportedRequest};
-use crate::{
-    rtp::srtp::{ErrorParse, SrtpTransport},
-    server::udp::WebRtcRequest,
-};
-use bitreader::BitReader;
-use rtp_rs::RtpReader;
+use crate::rtp::srtp::ErrorParse;
+use byteorder::ByteOrder;
 
-pub fn parse_rtp(buf: &[u8]) -> Option<RtpReader> {
-    RtpReader::new(buf).ok()
-}
-
-pub fn rtp_processor(
-    request: WebRtcRequest,
-    transport: Option<&mut SrtpTransport>,
-) -> Result<Vec<u8>, ErrorParse> {
-    if let WebRtcRequest::Rtc(mut message, _addr) = request {
-        if let Some(transport) = transport {
-            message = transport.unprotect(&message)?;
-        }
-
-        let rtp_header = RtpHeader::from_buf(&message)?;
-
-        if rtp_header.payload == 111 {
-            return Err(UnsupportedFormat);
-        }
-
-        return Ok(message);
-    }
-    Err(UnsupportedRequest(format!(
-        "unsupported request {}, when waiting rtc",
-        request.get_type()
-    )))
-}
-
-pub fn rtcp_processor(
-    request: WebRtcRequest,
-    transport: Option<&mut SrtpTransport>,
-) -> Result<Vec<u8>, ErrorParse> {
-    if let WebRtcRequest::Rtc(mut message, _addr) = request {
-        if let Some(transport) = transport {
-            message = transport.unprotect_rctp(&message)?;
-        }
-        return Ok(message);
-    }
-    Err(UnsupportedRequest(format!(
-        "unsupported request {}, when waiting rtc",
-        request.get_type()
-    )))
-}
-
+#[inline]
 pub fn is_rtcp(buf: &[u8]) -> bool {
-    if buf.len() < 4 {
-        return false;
-    }
-
-    if (buf[0] >> 6) != 2 {
+    if !RtpHeader::is_rtp_header(buf) {
         return false;
     }
     if buf[1] < 200 || buf[1] > 206 {
@@ -64,32 +13,42 @@ pub fn is_rtcp(buf: &[u8]) -> bool {
     true
 }
 
-#[allow(dead_code)]
+#[derive(Copy, Clone, Debug)]
 pub struct RtpHeader {
-    version: u8,
-    padding: bool,
-    extension: bool,
-    csrc_count: u8,
-    marker: bool,
-    payload: u8,
+    pub marker: bool,
+    pub payload: u8,
+    pub sequence: u16,
+    pub timestamp: u32,
 }
 
 impl RtpHeader {
-    fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
-        let mut reader = BitReader::new(buf);
-        let version = reader.read_u8(2)?;
+    #[inline]
+    pub fn is_rtp_header(buf: &[u8]) -> bool {
+        if buf.len() <= 12 {
+            return false;
+        }
+
+        let version = buf[0] >> 6;
 
         if version != 2 {
+            return false;
+        }
+
+        true
+    }
+    pub fn from_buf(buf: &[u8]) -> Result<RtpHeader, ErrorParse> {
+        if !RtpHeader::is_rtp_header(buf) {
             return Err(ErrorParse::UnsupportedFormat);
         }
 
+        let sequence = byteorder::NetworkEndian::read_u16(&buf[2..4]);
+        let timestamp = byteorder::NetworkEndian::read_u32(&buf[4..8]);
+
         Ok(RtpHeader {
-            version,
-            padding: reader.read_bool()?,
-            extension: reader.read_bool()?,
-            csrc_count: reader.read_u8(4)?,
-            marker: reader.read_bool()?,
-            payload: reader.read_u8(7)?,
+            marker: (buf[1] >> 7) == 1,
+            payload: buf[1] & 0b01111111,
+            sequence,
+            timestamp,
         })
     }
 }
