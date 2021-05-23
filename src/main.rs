@@ -28,19 +28,15 @@ use actix_files::NamedFile;
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-    let args: Vec<String> = std::env::args().collect();
-
-    let public_udp_addr: SocketAddr = args
-        .get(1)
+    let public_udp_addr: SocketAddr = std::env::var("TURN_ADDR")
         .map(|addr| addr.parse())
-        .unwrap_or_else(|| "127.0.0.1:3336".parse())
+        .unwrap_or_else(|_| "127.0.0.1:3336".parse())
         .expect("could not parse sdp addr");
 
-    let session_listen_addr: SocketAddr = args
-        .get(2)
+    let session_listen_addr: SocketAddr = std::env::var("WEB_ADDR")
         .map(|addr| addr.parse())
-        .unwrap_or_else(|| "0.0.0.0:3333".parse())
-        .expect("could not parse session addr");
+        .unwrap_or_else(|_| "127.0.0.1:3333".parse())
+        .expect("could not parse web addr");
 
     let (recv, _send) = create_udp(public_udp_addr).await;
 

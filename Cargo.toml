@@ -2,7 +2,12 @@
 name = "r-streamer"
 version = "0.1.0"
 authors = ["Mnwa <mihan@panfilov.biz>"]
+repository = "https://github.com/Mnwa/r-streamer"
 edition = "2018"
+
+[profile.release]
+ltp = true
+codegen-units = 1
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
