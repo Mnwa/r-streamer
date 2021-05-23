@@ -1,3 +1,4 @@
+use crate::rtp::jitter::JITTER_BUFFER_START_DELAY;
 use crate::sdp::media::MediaList;
 use crate::{
     client::stream::{ClientSslPackets, ClientSslPacketsChannels},
@@ -10,6 +11,7 @@ use parking_lot::{Mutex, RwLock};
 use rand::Rng;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use std::{
     collections::HashMap,
     error::Error,
@@ -112,7 +114,11 @@ pub struct ClientRtpRuntime {
     pub server_ts: u32,
     pub client_sequence: Option<NonZeroU16>,
     pub server_sequence: u16,
+    pub started_time: Instant,
+    pub prev_time_diff: Duration,
 }
+
+pub type ClientRtpRuntimeStorage = HashMap<u32, ClientRtpRuntime>;
 
 impl Default for ClientRtpRuntime {
     fn default() -> Self {
@@ -120,8 +126,25 @@ impl Default for ClientRtpRuntime {
         Self {
             server_ts: rng.gen_range(1..100000),
             server_sequence: rng.gen_range(1..10000),
+            started_time: Instant::now(),
             client_ts: Default::default(),
             client_sequence: Default::default(),
+            prev_time_diff: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ClientRtpJitterStats {
+    pub jitter_delay: u32,
+    pub jitter_check_timestamp: Instant,
+}
+
+impl Default for ClientRtpJitterStats {
+    fn default() -> Self {
+        Self {
+            jitter_delay: JITTER_BUFFER_START_DELAY.as_millis() as u32,
+            jitter_check_timestamp: Instant::now(),
         }
     }
 }
@@ -131,7 +154,8 @@ pub struct Client {
     channels: ClientSslPacketsChannels,
     media: RwLock<Option<MediaList>>,
     srtp: Mutex<Option<SrtpTransport>>,
-    rtp_runtime: Mutex<ClientRtpRuntime>,
+    rtp_runtime_storage: Mutex<ClientRtpRuntimeStorage>,
+    jitter_stats: Mutex<ClientRtpJitterStats>,
     receivers: ClientsRefStorage,
     sender_addr: RwLock<Option<SocketAddr>>,
     is_deleted: AtomicBool,
@@ -150,8 +174,11 @@ impl Client {
     pub fn get_receivers(&self) -> &ClientsRefStorage {
         &self.receivers
     }
-    pub fn get_rtp_runtime(&self) -> &Mutex<ClientRtpRuntime> {
-        &self.rtp_runtime
+    pub fn get_rtp_runtime_storage(&self) -> &Mutex<ClientRtpRuntimeStorage> {
+        &self.rtp_runtime_storage
+    }
+    pub fn get_jitter_stats(&self) -> &Mutex<ClientRtpJitterStats> {
+        &self.jitter_stats
     }
 
     pub fn get_sender_addr(&self) -> &RwLock<Option<SocketAddr>> {
@@ -194,7 +221,8 @@ impl Default for Client {
             sender_addr: Default::default(),
             is_deleted: Default::default(),
             dtls_connected: Default::default(),
-            rtp_runtime: Default::default(),
+            rtp_runtime_storage: Default::default(),
+            jitter_stats: Default::default(),
         }
     }
 }

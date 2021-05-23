@@ -2,6 +2,9 @@ use crate::client::clients::ClientsRefStorage;
 use crate::client::rtc_actor::RtcActor;
 use crate::client::sessions::SessionStorageItem;
 use crate::rtp::core::RtpHeader;
+use crate::rtp::jitter::{
+    GetOrStoreJitterBuffer, GetOrStoreJitterBufferResponse, JitterControlActor,
+};
 use crate::sdp::media::{MediaAddrMessage, MediaList, MediaUserMessage, MediaUserStorage};
 use crate::{
     client::{
@@ -13,9 +16,10 @@ use crate::{
     server::{crypto::Crypto, meta::ServerMeta},
     stun::{parse_stun_binding_request, write_stun_success_response, StunBindingRequest},
 };
+use actix::dev::MessageResponse;
 use actix::prelude::*;
-use futures::{FutureExt, TryFutureExt};
-use log::{info, warn};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use log::warn;
 use smallvec::SmallVec;
 use std::{collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc, task::Poll};
 use tokio::{net::UdpSocket, time::Duration};
@@ -24,6 +28,7 @@ pub struct UdpRecv {
     send: Addr<UdpSend>,
     dtls: Addr<ClientActor>,
     rtc: Addr<RtcActor>,
+    jitter_control: Addr<JitterControlActor>,
     data: Arc<ServerData>,
     sessions: SessionsStorage,
     media_sessions: MediaUserStorage,
@@ -31,6 +36,10 @@ pub struct UdpRecv {
 
 impl Actor for UdpRecv {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        warn!("udp recv actor died")
+    }
 }
 
 impl UdpRecv {
@@ -38,6 +47,7 @@ impl UdpRecv {
         recv: Arc<UdpSocket>,
         send: Addr<UdpSend>,
         dtls: Addr<ClientActor>,
+        jitter_control: Addr<JitterControlActor>,
         rtc: Addr<RtcActor>,
         data: Arc<ServerData>,
     ) -> Addr<UdpRecv> {
@@ -72,6 +82,7 @@ impl UdpRecv {
                 dtls,
                 data,
                 rtc,
+                jitter_control,
                 sessions: HashMap::new(),
                 media_sessions: HashMap::new(),
             }
@@ -137,7 +148,37 @@ impl Handler<WebRtcRequest> for UdpRecv {
                 );
             }
             WebRtcRequest::Rtc(message, addr) => {
-                self.rtc.do_send(WebRtcRequest::Rtc(message, addr));
+                let rtc_addr = self.rtc.clone();
+                ctx.spawn({
+                    let jitter_buffer_request = self.jitter_control.send(GetOrStoreJitterBuffer {
+                        addr,
+                        data: message,
+                    });
+                    async move {
+                        let jitter_buffer_response = jitter_buffer_request.await;
+                        match jitter_buffer_response {
+                            Ok(GetOrStoreJitterBufferResponse::Buffer(Some(jitter_buffer))) => {
+                                let response: Result<(), _> = futures::stream::iter(jitter_buffer)
+                                    .then(|message| {
+                                        rtc_addr.send(WebRtcRequest::Rtc(message, addr))
+                                    })
+                                    .try_collect()
+                                    .await;
+                                if let Err(e) = response {
+                                    warn!("Rtc request actor failed: {}", e)
+                                }
+                            }
+                            Ok(GetOrStoreJitterBufferResponse::Buffer(None)) => {}
+                            Ok(GetOrStoreJitterBufferResponse::Packet(message)) => {
+                                rtc_addr.do_send(WebRtcRequest::Rtc(message, addr))
+                            }
+                            Err(e) => {
+                                warn!("Jitter extracting error: {}", e)
+                            }
+                        }
+                    }
+                    .into_actor(self)
+                });
             }
             WebRtcRequest::Unknown => warn!("recv unknown request"),
         }
@@ -206,7 +247,7 @@ impl Actor for UdpSend {
     type Context = Context<Self>;
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        info!("stopping")
+        warn!("udp send actor died")
     }
 }
 
@@ -273,7 +314,7 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
     let server = Arc::new(UdpSocket::bind(addr).await.expect("udp must be up"));
     let meta = ServerMeta::new();
     let crypto = Crypto::init().expect("WebRTC server could not initialize OpenSSL primitives");
-    let data = Arc::new(ServerData { meta, crypto });
+    let data = Arc::new(ServerData { crypto, meta });
 
     let udp_send = UdpSend::new(server.clone(), Arc::clone(&data));
     let client_storage = Arc::new(ClientsRefStorage::default());
@@ -282,8 +323,13 @@ pub async fn create_udp(addr: SocketAddr) -> (Addr<UdpRecv>, Addr<UdpSend>) {
         udp_send.clone(),
         Arc::clone(&client_storage),
     );
-    let rtc = RtcActor::new(udp_send.clone(), Arc::clone(&client_storage));
-    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, rtc, data);
+    let jitter_control = JitterControlActor::new();
+    let rtc = RtcActor::new(
+        udp_send.clone(),
+        jitter_control.clone(),
+        Arc::clone(&client_storage),
+    );
+    let udp_recv = UdpRecv::new(server, udp_send.clone(), dtls, jitter_control, rtc, data);
 
     (udp_recv, udp_send)
 }
@@ -343,4 +389,4 @@ impl Future for UdpMassSender {
     }
 }
 
-pub type DataPacket = SmallVec<[u8; 2048]>;
+pub type DataPacket = SmallVec<[u8; 1200]>;

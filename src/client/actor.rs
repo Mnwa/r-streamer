@@ -45,6 +45,10 @@ impl ClientActor {
 
 impl Actor for ClientActor {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        warn!("client actor died")
+    }
 }
 
 impl Handler<WebRtcRequest> for ClientActor {
@@ -84,7 +88,7 @@ impl Handler<WebRtcRequest> for ClientActor {
                             ClientStateStatus::New => {
                                 match connect(client_ref.clone(), acceptor).await {
                                     Err(e) => {
-                                        warn!("connect err: {}", e);
+                                        warn!("{} connect err: {}", addr, e);
                                         match self_addr.send(DeleteMessage(addr)).await {
                                             Err(e) => warn!("delete err: {}", e),
                                             Ok(is_deleted) => info!("deleted {}", is_deleted),
@@ -223,6 +227,10 @@ impl Handler<MediaAddrMessage> for ClientActor {
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
         if let Some(c) = self.client_storage.read().get(&addr) {
+            let mut rtp_runtime_storage = c.get_rtp_runtime_storage().lock();
+            media.get_frequencies().into_iter().for_each(|f| {
+                rtp_runtime_storage.entry(f).or_default();
+            });
             let mut c_media = c.get_media().write();
             *c_media = Some(media);
         }

@@ -23,6 +23,9 @@ impl MediaList {
     pub fn get_frequency(&self, id: &u8) -> Option<&u32> {
         self.1.get(id)
     }
+    pub fn get_frequencies(&self) -> Vec<u32> {
+        self.1.iter().map(|(_, f)| f).copied().collect()
+    }
 
     pub fn insert(&mut self, id: u8, name: SmolStr, frequency: u32) {
         self.0.insert(name, id);

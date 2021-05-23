@@ -65,6 +65,7 @@ pub enum ErrorParse {
     UnsupportedProfile(SmolStr),
     UnsupportedFormat,
     ClientNotReady(SocketAddr),
+    CodecNotSet(SocketAddr),
     ActorDead(MailboxError),
 }
 
@@ -83,6 +84,7 @@ impl Display for ErrorParse {
             ErrorParse::UnsupportedFormat => write!(f, "Unsupported format: its ok"),
             ErrorParse::ClientNotReady(addr) => write!(f, "Client not ready: {}", addr),
             ErrorParse::ActorDead(e) => write!(f, "Actor is dead: {:?}", e),
+            ErrorParse::CodecNotSet(e) => write!(f, "Codec not set: {:?}", e),
         }
     }
 }

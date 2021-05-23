@@ -39,7 +39,7 @@ async fn main() -> std::io::Result<()> {
     let session_listen_addr: SocketAddr = args
         .get(2)
         .map(|addr| addr.parse())
-        .unwrap_or_else(|| "127.0.0.1:3333".parse())
+        .unwrap_or_else(|| "0.0.0.0:3333".parse())
         .expect("could not parse session addr");
 
     let (recv, _send) = create_udp(public_udp_addr).await;

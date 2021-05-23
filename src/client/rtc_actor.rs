@@ -1,23 +1,35 @@
-use crate::client::clients::ClientsRefStorage;
+use crate::client::clients::{ClientSafeRef, ClientsRefStorage};
 use crate::rtp::core::{is_rtcp, RtpHeader};
+use crate::rtp::jitter::{
+    DecreaseJitterBufferDelay, IncreaseJitterBufferDelay, JitterControlActor,
+    JITTER_BUFFER_DELAY_INCREASE_STEP, JITTER_BUFFER_VOLATILE, JITTER_RECHECK_TIME,
+};
 use crate::rtp::srtp::ErrorParse;
 use crate::server::udp::{DataPacket, UdpSend, WebRtcRequest};
 use actix::prelude::*;
 use byteorder::ByteOrder;
 use log::warn;
 use rayon::prelude::*;
+use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct RtcActor {
     client_storage: Arc<ClientsRefStorage>,
     udp_send: Addr<UdpSend>,
+    jitter_control: Addr<JitterControlActor>,
 }
 
 impl RtcActor {
-    pub fn new(udp_send: Addr<UdpSend>, client_storage: Arc<ClientsRefStorage>) -> Addr<Self> {
+    pub fn new(
+        udp_send: Addr<UdpSend>,
+        jitter_control: Addr<JitterControlActor>,
+        client_storage: Arc<ClientsRefStorage>,
+    ) -> Addr<Self> {
         SyncArbiter::start(num_cpus::get(), move || Self {
             udp_send: udp_send.clone(),
+            jitter_control: jitter_control.clone(),
             client_storage: client_storage.clone(),
         })
     }
@@ -25,6 +37,10 @@ impl RtcActor {
 
 impl Actor for RtcActor {
     type Context = SyncContext<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        warn!("rtp actor died")
+    }
 }
 
 impl Handler<WebRtcRequest> for RtcActor {
@@ -44,19 +60,10 @@ impl Handler<WebRtcRequest> for RtcActor {
         let is_rtcp = is_rtcp(&message);
 
         let res: Result<(), ErrorParse> = RtpHeader::from_buf(&message).and_then(|rtp_header| {
-            let mut state = client_ref.get_srtp().lock();
-
-            let codec_n_frequency = if let Some(srtp) = &mut *state {
+            let codec_n_frequency = {
                 if is_rtcp {
-                    srtp.unprotect_rtcp(&mut message)?;
                     None
                 } else {
-                    srtp.unprotect(&mut message)?;
-
-                    if rtp_header.payload == 111 {
-                        return Err(ErrorParse::UnsupportedFormat);
-                    }
-
                     let media = client_ref.get_media().read();
                     media.as_ref().and_then(|media| {
                         Some((
@@ -65,30 +72,88 @@ impl Handler<WebRtcRequest> for RtcActor {
                         ))
                     })
                 }
-            } else {
-                return Err(ErrorParse::ClientNotReady(addr));
             };
 
-            drop(state);
+            {
+                // Decrypt rtp package
+                let mut state = client_ref.get_srtp().lock();
+
+                if let Some(srtp) = &mut *state {
+                    if is_rtcp {
+                        srtp.unprotect_rtcp(&mut message)?;
+                    } else {
+                        srtp.unprotect(&mut message)?;
+
+                        if rtp_header.payload == 111 {
+                            return Err(ErrorParse::UnsupportedFormat);
+                        }
+                    }
+                } else {
+                    return Err(ErrorParse::ClientNotReady(addr));
+                }
+            }
 
             // не забыть в будущем подменять timestamp для rtcp
             if !is_rtcp {
-                let mut rtp_runtime = client_ref.get_rtp_runtime().lock();
+                // Replace client with server meta
+                let mut rtp_runtime_storage = client_ref.get_rtp_runtime_storage().lock();
+
+                let rtp_runtime_o = codec_n_frequency.as_ref().and_then(|(_, frequency)| {
+                    Some((rtp_runtime_storage.get_mut(frequency)?, frequency))
+                });
+
+                let (mut rtp_runtime, frequency) = match rtp_runtime_o {
+                    None => return Err(ErrorParse::CodecNotSet(addr)),
+                    Some(r) => r,
+                };
 
                 let client_diff = match rtp_runtime.client_ts {
                     Some(client_ts) => rtp_header.timestamp.saturating_sub(client_ts.get()),
                     None => 0,
                 };
+                let incr_sequence = match rtp_runtime.client_sequence {
+                    Some(client_sequence) => {
+                        rtp_header.sequence.saturating_sub(client_sequence.get())
+                    }
+                    None => 0,
+                };
                 rtp_runtime.client_sequence = NonZeroU16::new(rtp_header.sequence);
                 rtp_runtime.client_ts = NonZeroU32::new(rtp_header.timestamp);
-                rtp_runtime.server_sequence += 1;
+                rtp_runtime.server_sequence += incr_sequence;
                 rtp_runtime.server_ts += client_diff;
+
+                let current_time = rtp_runtime.started_time.elapsed();
+                let real_time_diff = current_time - rtp_runtime.prev_time_diff;
+                rtp_runtime.prev_time_diff = current_time;
 
                 replace_sequence_n_timestamp(
                     &mut message,
                     rtp_runtime.server_sequence,
                     rtp_runtime.server_ts,
                 );
+
+                {
+                    // Calculating jitter delay
+                    let rate = frequency / 1000;
+                    let arrival = real_time_diff.as_millis() as u32 * rate;
+                    let transit = (arrival as i64 - client_diff as i64).abs() as u32;
+
+                    let mut jitter_stats = client_ref.get_jitter_stats().lock();
+
+                    if transit > jitter_stats.jitter_delay * rate + JITTER_BUFFER_VOLATILE {
+                        jitter_stats.jitter_check_timestamp = Instant::now();
+                        jitter_stats.jitter_delay +=
+                            JITTER_BUFFER_DELAY_INCREASE_STEP.as_millis() as u32;
+                        self.jitter_control
+                            .do_send(IncreaseJitterBufferDelay { addr });
+                    } else if jitter_stats.jitter_check_timestamp.elapsed() >= JITTER_RECHECK_TIME {
+                        jitter_stats.jitter_check_timestamp = Instant::now();
+                        jitter_stats.jitter_delay -=
+                            JITTER_BUFFER_DELAY_INCREASE_STEP.as_millis() as u32;
+                        self.jitter_control
+                            .do_send(DecreaseJitterBufferDelay { addr });
+                    }
+                }
             }
 
             let receivers = client_ref.get_receivers().read();
@@ -116,16 +181,26 @@ impl Handler<WebRtcRequest> for RtcActor {
                 receivers
                     .par_iter()
                     .filter(|(_, recv)| !recv.is_deleted())
-                    .try_for_each(|(r_addr, recv)| {
+                    .try_for_each(|(r_addr, recv): (&SocketAddr, &ClientSafeRef)| {
                         let mut message = message.clone();
-                        let mut state = recv.get_srtp().lock();
 
-                        let message = if let Some(srtp) = state.as_mut() {
-                            if is_rtcp {
-                                srtp.protect_rtcp(&mut message)?;
+                        {
+                            // Encrypt rtp package
+                            let mut state = recv.get_srtp().lock();
+                            if let Some(srtp) = state.as_mut() {
+                                if is_rtcp {
+                                    srtp.protect_rtcp(&mut message)?;
+                                } else {
+                                    srtp.protect(&mut message)?;
+                                }
                             } else {
-                                srtp.protect(&mut message)?;
+                                return Err(ErrorParse::ClientNotReady(addr));
+                            }
+                        }
 
+                        {
+                            // Prepare payload type
+                            if is_rtcp {
                                 if let Some((codec, _frequency)) = codec_n_frequency.as_ref() {
                                     let media = recv.get_media().read();
                                     if let Some(payload) = media
@@ -137,11 +212,7 @@ impl Handler<WebRtcRequest> for RtcActor {
                                     }
                                 }
                             }
-
-                            message
-                        } else {
-                            return Err(ErrorParse::ClientNotReady(addr));
-                        };
+                        }
 
                         udp_send.do_send(WebRtcRequest::Rtc(
                             DataPacket::from(message.as_slice()),
