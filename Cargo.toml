@@ -19,8 +19,7 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4"
 webrtc-sdp = "0.3"
 rand = "0.8"
-openssl = { version = "0.10", features = ["vendored"] }
-openssl-sys = "0.9"
+openssl = { version = "0.10" }
 byteorder = "1.4"
 crc32fast = "1.2"
 actix = "0.11"
